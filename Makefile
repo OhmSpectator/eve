@@ -39,7 +39,7 @@ ROOTFS_FORMAT=squash
 # Image type for installer image
 INSTALLER_IMG_FORMAT=raw
 # SSH port to use for running images live
-SSH_PORT=2222
+SSH_PORT=2245
 # ports to proxy into a running EVE instance (in ssh notation with -L)
 SSH_PROXY=-L6000:localhost:6000
 # ssh key to be used for getting into an EVE instance
@@ -211,7 +211,7 @@ QEMU_OPTS_TPM=$(QEMU_OPTS_TPM_$(TPM:%=Y)_$(ZARCH))
 QEMU_OPTS_amd64=-smbios type=1,serial=31415926
 QEMU_OPTS_arm64=-smbios type=1,serial=31415926 -drive file=fat:rw:$(dir $(DEVICETREE_DTB)),label=QEMU_DTB,format=vvfat
 QEMU_OPTS_riscv64=-kernel $(UBOOT_IMG)/u-boot.bin -device virtio-blk,drive=uefi-disk
-QEMU_OPTS_COMMON= -m $(QEMU_MEMORY) -smp 4 -display none $(QEMU_OPTS_BIOS) \
+QEMU_OPTS_COMMON= -m $(QEMU_MEMORY) -smp 16 -display none $(QEMU_OPTS_BIOS) \
         -serial mon:stdio      \
 	-global ICH9-LPC.noreboot=false -watchdog-action reset \
         -rtc base=utc,clock=rt \
