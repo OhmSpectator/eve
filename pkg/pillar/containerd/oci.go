@@ -308,8 +308,9 @@ func (s *ociSpec) UpdateFromDomain(dom *types.DomainConfig) {
 		if s.Linux.Resources.Memory == nil {
 			s.Linux.Resources.Memory = &specs.LinuxMemory{}
 		}
+		// Fix here!
 		if s.Linux.Resources.CPU == nil {
-			s.Linux.Resources.CPU = &specs.LinuxCPU{}
+			s.Linux.Resources.CPU = &specs.LinuxCPU{Cpus: dom.VmConfig.CPUs}
 		}
 
 		m := int64(dom.Memory * 1024)

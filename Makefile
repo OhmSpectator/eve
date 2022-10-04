@@ -422,6 +422,9 @@ run-installer-net: $(BIOS_IMG) $(IPXE_IMG) $(DEVICETREE_DTB) $(SWTPM)
 run-live run: $(BIOS_IMG) $(DEVICETREE_DTB) $(SWTPM)
 	$(QEMU_SYSTEM) $(QEMU_OPTS) -drive file=$(CURRENT_IMG),format=$(IMG_FORMAT),id=uefi-disk
 
+print-run:
+	@echo $(QEMU_SYSTEM) $(QEMU_OPTS) -drive file=$(CURRENT_IMG),format=$(IMG_FORMAT),id=uefi-disk
+
 run-target: $(BIOS_IMG) $(DEVICETREE_DTB) $(SWTPM)
 	$(QEMU_SYSTEM) $(QEMU_OPTS) -drive file=$(TARGET_IMG),format=$(IMG_FORMAT)
 
@@ -542,7 +545,7 @@ $(ROOTFS_IMG): images/rootfs-$(HV).yml | $(INSTALLER)
 	$(QUIET): $@: Begin
 	./tools/makerootfs.sh $< $@ $(ROOTFS_FORMAT) $(ZARCH)
 	@echo "size of $@ is $$(wc -c < "$@")B"
-	@[ $$(wc -c < "$@") -gt $$(( 250 * 1024 * 1024 )) ] && \
+	@[ $$(wc -c < "$@") -gt $$(( 300 * 1024 * 1024 )) ] && \
 	        echo "ERROR: size of $@ is greater than 250MB (bigger than allocated partition)" && exit 1 || :
 	$(QUIET): $@: Succeeded
 

@@ -99,6 +99,12 @@ func (config DomainConfig) GetTaskName() string {
 		strconv.Itoa(config.AppNum)
 }
 
+func (status DomainStatus) GetTaskName() string {
+	return status.UUIDandVersion.UUID.String() + "." +
+		status.UUIDandVersion.Version + "." +
+		strconv.Itoa(status.AppNum)
+}
+
 // DomainnameToUUID does the reverse of GetTaskName
 func DomainnameToUUID(name string) (uuid.UUID, string, int, error) {
 	// FIXME: we can likely drop this altogether
@@ -205,6 +211,7 @@ type VmConfig struct {
 	BootLoader string // default ""
 	// For CPU pinning
 	CPUs string // default "", list of "1,2"
+	//CPUsSet map[int]bool
 	// Needed for device passthru
 	DeviceTree string // default ""; sets device_tree
 	// Example: device_tree="guest-gpio.dtb"
@@ -219,6 +226,7 @@ type VmConfig struct {
 	VncDisplay         uint32
 	VncPasswd          string
 	DisableLogs        bool
+	CPUsPinned         bool
 }
 
 type VmMode uint8

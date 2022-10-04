@@ -570,6 +570,8 @@ func parseNetworkInstanceConfig(getconfigCtx *getconfigContext,
 
 var appinstancePrevConfigHash []byte
 
+var vm_cnt = 0
+
 func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 	config *zconfig.EdgeDevConfig) {
 
@@ -633,6 +635,14 @@ func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 		appInstance.MetaDataType = types.MetaDataType(cfgApp.MetaDataType)
 		appInstance.Delay = time.Duration(cfgApp.StartDelayInSeconds) * time.Second
 		appInstance.Service = cfgApp.Service
+		// TODO Get the value from the cloud
+		//appInstance.FixedResources.CPUsPinned = cfgApp.Fixedresources.CPUPinningEnabled
+		if vm_cnt%2 == 0 {
+			appInstance.FixedResources.CPUsPinned = true
+		} else {
+			appInstance.FixedResources.CPUsPinned = false
+		}
+		vm_cnt++
 
 		appInstance.VolumeRefConfigList = make([]types.VolumeRefConfig,
 			len(cfgApp.VolumeRefList))

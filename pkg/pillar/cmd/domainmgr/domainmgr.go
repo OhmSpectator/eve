@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path"
 	"strconv"
 	"strings"
@@ -68,6 +69,17 @@ func isPort(ctx *domainContext, ifname string) bool {
 	return types.IsPort(ctx.deviceNetworkStatus, ifname)
 }
 
+/*
+type VmCPUsSet struct {
+	isPinned bool
+	cpus []int
+}
+*/
+
+type VmDesctiptor struct {
+	CPUsSet map[int]bool
+}
+
 // Information for handleCreate/Modify/Delete
 type domainContext struct {
 	agentbase.AgentBase
@@ -110,8 +122,10 @@ type domainContext struct {
 	processCloudInitMultiPart bool
 	publishTicker             flextimer.FlexTickerHandle
 	// cli options
-	versionPtr    *bool
-	hypervisorPtr *string
+	versionPtr      *bool
+	hypervisorPtr   *string
+	vmDescriptor    map[uuid.UUID]VmDesctiptor
+	vmResourcesLock sync.Mutex
 }
 
 // AddAgentSpecificCLIFlags adds CLI options
@@ -148,6 +162,7 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 		pids:                make(map[int32]bool),
 		cipherMetrics:       cipher.NewAgentMetrics(agentName),
 		metricInterval:      10,
+		vmDescriptor:        make(map[uuid.UUID]VmDesctiptor),
 	}
 	agentbase.Init(&domainCtx, logger, log, agentName,
 		agentbase.WithArguments(arguments))
@@ -1075,6 +1090,143 @@ func lookupDomainConfig(ctx *domainContext, key string) *types.DomainConfig {
 	return &config
 }
 
+var cpusReservedForEve = 2
+var cpusPinnedSet = map[int]bool{0: false, 1: false}
+var cpusSharedSet = map[int]bool{0: true, 1: true}
+
+func constructSharedCPUmask(cpus map[int]bool) string {
+	mask := ""
+	for cpu, used := range cpus {
+		if !used {
+			continue
+		}
+		if mask == "" {
+			mask = fmt.Sprintf("%d", cpu)
+		} else {
+			mask = fmt.Sprintf("%s,%d", mask, cpu)
+		}
+	}
+	return mask
+}
+
+func setNewCPUSet(vmUuid string, cpus string) (int, error) {
+	cpuSetFileName := fmt.Sprintf("/sys/fs/cgroup/cpuset/eve-user-apps/%s/cpuset.cpus", vmUuid)
+	subCommand := fmt.Sprintf("echo %s > %s", cpus, cpuSetFileName)
+	_, err := exec.Command("chroot", "/hostfs", "sh", "-c", subCommand).Output()
+	if err != nil {
+		// Most probably the file has not been created yet
+		return -1, err
+	}
+	return 0, nil
+}
+
+func excludeCPUfromSharedList(cpu int, ctx *domainContext) {
+	log.Errorf("@ohm: Pinning a CPU (%d), exclude it from the shared CPU sets...", cpu)
+	//Exclude the CPU from the shared list and fix the cgroups of previously created VMs
+	for vmUuid := range ctx.vmDescriptor {
+		curDescriptor := ctx.vmDescriptor[vmUuid]
+		curStatus := lookupDomainStatusByUUID(ctx, vmUuid)
+		if curStatus == nil {
+			log.Errorf("@ohm: No Status for %s", vmUuid)
+			continue
+		}
+		curConfig := lookupDomainConfig(ctx, curStatus.Key())
+		if curConfig == nil {
+			log.Errorf("@ohm: No config for %s", vmUuid)
+			continue
+		}
+		if curConfig.VmConfig.CPUsPinned {
+			continue
+		}
+		changed := false
+		for cpuToCheck, used := range curDescriptor.CPUsSet {
+			if cpuToCheck == cpu && used {
+				// Found previously assigned CPU. Have to exclude it
+				curDescriptor.CPUsSet[cpu] = false
+				changed = true
+			}
+		}
+		if changed {
+			curConfig.VmConfig.CPUs = constructSharedCPUmask(curDescriptor.CPUsSet)
+			ret, err := setNewCPUSet(curConfig.GetTaskName(), curConfig.VmConfig.CPUs)
+			if ret != 0 {
+				log.Errorf("@ohm: Failed to set new CPU set for %s: %s", curConfig.DisplayName, err)
+			}
+		}
+		log.Errorf("@ohm: CPU %curDescriptor in VM %s is used: %t", cpu, curConfig.DisplayName, curDescriptor.CPUsSet[cpu])
+	}
+	cpusSharedSet[cpu] = false
+}
+
+func assignPinnedCPU(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig, cpu int) {
+	log.Errorf("@ohm: assign pinned CPU %d to %s", cpu, status.DisplayName)
+	excludeCPUfromSharedList(cpu, ctx)
+	ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[cpu] = true
+	if config.VmConfig.CPUs == "" {
+		config.VmConfig.CPUs = fmt.Sprintf("%d", cpu)
+	} else {
+		config.VmConfig.CPUs = fmt.Sprintf("%s,%d", config.VmConfig.CPUs, cpu)
+	}
+	cpusPinnedSet[cpu] = true
+}
+
+func getHostCPUsNum() (int, error) {
+	out, err := exec.Command("chroot", "/hostfs", "nproc", "--all").Output()
+	if err != nil {
+		return -1, err
+	}
+	// remove "\n"
+	out = out[:2]
+	maxHostCpus, _ := strconv.Atoi(string(out))
+	return maxHostCpus, nil
+}
+
+func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig) {
+	log.Errorf("@ohm: assign CPUs to %s", status.DisplayName)
+	var cpusAssignedNum = 0
+	maxHostCpus, err := getHostCPUsNum()
+	if err != nil {
+		status.PendingAdd = false
+		errMsg := fmt.Errorf("failed to perform HW check")
+		status.SetErrorNow(errMsg.Error())
+		publishDomainStatus(ctx, status)
+	}
+	if config.VmConfig.CPUsPinned { // Pin the CPU
+		for i := cpusReservedForEve; i < maxHostCpus; i++ {
+			pinned, exists := cpusPinnedSet[i]
+			// Do we have this CPU ever used?
+			if exists { // Yes, the CPU has been used
+				// Is it pinned at the moment?
+				if !pinned { // No, it's not used at the moment
+					assignPinnedCPU(status, ctx, config, i)
+					cpusAssignedNum++
+				} // Yes, the CPU is used. Skip and go to the next CPU
+			} else { // No, the CPU has never been used. Can be pinned now
+				assignPinnedCPU(status, ctx, config, i)
+				cpusAssignedNum++
+			}
+			if cpusAssignedNum == config.VmConfig.VCpus {
+				break
+			}
+		}
+	} else { // VM has no pinned CPUs, assign all the CPUs from the shared set
+		for i := 0; i < maxHostCpus; i++ {
+			shared, exists := cpusSharedSet[i]
+			if !exists || shared {
+				log.Errorf("@ohm: assign non-pinned CPU %d to %s", i, status.DisplayName)
+				cpusSharedSet[i] = true
+				ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[i] = true
+				//status.VmConfig.CPUsSet[i] = true
+				if config.VmConfig.CPUs == "" {
+					config.VmConfig.CPUs = fmt.Sprintf("%d", i)
+				} else {
+					config.VmConfig.CPUs = fmt.Sprintf("%s,%d", config.VmConfig.CPUs, i)
+				}
+			}
+		}
+	}
+}
+
 func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 
 	log.Functionf("handleCreate(%v) for %s",
@@ -1097,6 +1249,11 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 		VmConfig:           config.VmConfig,
 		Service:            config.Service,
 	}
+
+	ctx.vmDescriptor[config.UUIDandVersion.UUID] = VmDesctiptor{CPUsSet: make(map[int]bool)}
+	ctx.vmResourcesLock.Lock()
+	assignCPUs(&status, ctx, config)
+
 	// Note that the -emu interface doesn't exist until after boot of the domU, but we
 	// initialize the VifList here with the VifUsed.
 	status.VifList = fillVifUsed(config.VifList)
@@ -1112,6 +1269,7 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 		status.PendingAdd = false
 		status.SetErrorNow(err.Error())
 		publishDomainStatus(ctx, &status)
+		ctx.vmResourcesLock.Unlock()
 		return
 	}
 
@@ -1120,6 +1278,7 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 
 	if config.Activate {
 		doActivate(ctx, *config, &status)
+		ctx.vmResourcesLock.Unlock()
 	}
 	// work done
 	status.PendingAdd = false
