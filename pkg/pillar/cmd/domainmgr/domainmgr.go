@@ -1153,14 +1153,13 @@ func excludeCPUfromSharedList(cpu int, ctx *domainContext) {
 				log.Errorf("@ohm: Failed to set new CPU set for %s: %s", curConfig.DisplayName, err)
 			}
 		}
-		log.Errorf("@ohm: CPU %curDescriptor in VM %s is used: %t", cpu, curConfig.DisplayName, curDescriptor.CPUsSet[cpu])
+		log.Errorf("@ohm: CPU %d in %s is used: %t", cpu, curConfig.DisplayName, curDescriptor.CPUsSet[cpu])
 	}
 	cpusSharedSet[cpu] = false
 }
 
 func assignPinnedCPU(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig, cpu int) {
 	log.Errorf("@ohm: assign pinned CPU %d to %s", cpu, status.DisplayName)
-	excludeCPUfromSharedList(cpu, ctx)
 	ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[cpu] = true
 	if config.VmConfig.CPUs == "" {
 		config.VmConfig.CPUs = fmt.Sprintf("%d", cpu)
@@ -1168,6 +1167,12 @@ func assignPinnedCPU(status *types.DomainStatus, ctx *domainContext, config *typ
 		config.VmConfig.CPUs = fmt.Sprintf("%s,%d", config.VmConfig.CPUs, cpu)
 	}
 	cpusPinnedSet[cpu] = true
+}
+
+func freePinnedCPU(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig, cpu int) {
+	log.Errorf("@ohm: free pinned CPU %d to %s", cpu, status.DisplayName)
+	ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[cpu] = false
+	cpusPinnedSet[cpu] = false
 }
 
 func getHostCPUsNum() (int, error) {
@@ -1181,7 +1186,7 @@ func getHostCPUsNum() (int, error) {
 	return maxHostCpus, nil
 }
 
-func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig) {
+func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig) error {
 	log.Errorf("@ohm: assign CPUs to %s", status.DisplayName)
 	var cpusAssignedNum = 0
 	maxHostCpus, err := getHostCPUsNum()
@@ -1209,6 +1214,23 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 				break
 			}
 		}
+		// Check,that all the necessary CPUs were found
+		if cpusAssignedNum != config.VmConfig.VCpus {
+			log.Errorf("@ohm: Failed to allocate necessary amount of CPUs (assigned %d, need %d)", cpusAssignedNum, config.VmConfig.VCpus)
+			for cpuToCheck, pinned := range ctx.vmDescriptor[config.UUIDandVersion.UUID].CPUsSet {
+				if pinned {
+					cpusPinnedSet[cpuToCheck] = false
+					// Not yet excluded from the list pf shared CPUs, so not necessary to remove here
+				}
+			}
+			return fmt.Errorf("failed to allocate necessary amount of CPUs")
+		}
+		// If we are here, we assigned CPUs successfully. Remove them from the shared list.
+		for cpu, used := range ctx.vmDescriptor[config.UUIDandVersion.UUID].CPUsSet {
+			if used {
+				excludeCPUfromSharedList(cpu, ctx)
+			}
+		}
 	} else { // VM has no pinned CPUs, assign all the CPUs from the shared set
 		for i := 0; i < maxHostCpus; i++ {
 			shared, exists := cpusSharedSet[i]
@@ -1216,7 +1238,6 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 				log.Errorf("@ohm: assign non-pinned CPU %d to %s", i, status.DisplayName)
 				cpusSharedSet[i] = true
 				ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[i] = true
-				//status.VmConfig.CPUsSet[i] = true
 				if config.VmConfig.CPUs == "" {
 					config.VmConfig.CPUs = fmt.Sprintf("%d", i)
 				} else {
@@ -1225,6 +1246,7 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 			}
 		}
 	}
+	return nil
 }
 
 func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
@@ -1252,7 +1274,16 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 
 	ctx.vmDescriptor[config.UUIDandVersion.UUID] = VmDesctiptor{CPUsSet: make(map[int]bool)}
 	ctx.vmResourcesLock.Lock()
-	assignCPUs(&status, ctx, config)
+	err := assignCPUs(&status, ctx, config)
+	if err != nil {
+		status.PendingAdd = false
+		status.SetErrorNow(err.Error())
+		publishDomainStatus(ctx, &status)
+		ctx.vmResourcesLock.Unlock()
+		return
+	}
+
+	log.Errorf("@ohm: CPUs for %s assigned: %s", config.DisplayName, config.VmConfig.CPUs)
 
 	// Note that the -emu interface doesn't exist until after boot of the domU, but we
 	// initialize the VifList here with the VifUsed.
@@ -1263,7 +1294,7 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 		config.UUIDandVersion, status.DomainName,
 		config.DisplayName)
 
-	if err := configToStatus(ctx, *config, &status); err != nil {
+	if err = configToStatus(ctx, *config, &status); err != nil {
 		log.Errorf("Failed to create DomainStatus from %v: %s",
 			config, err)
 		status.PendingAdd = false

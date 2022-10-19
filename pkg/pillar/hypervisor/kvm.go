@@ -708,7 +708,7 @@ func (ctx kvmContext) CreateDomConfig(domainName string, config types.DomainConf
 }
 
 func waitForQmp(domainName string, available bool) error {
-	maxDelay := time.Second * 10
+	maxDelay := time.Second * 30
 	delay := time.Second
 	var waited time.Duration
 	for {
