@@ -1119,15 +1119,15 @@ func constructSharedCPUmask(cpus map[int]bool) string {
 	return mask
 }
 
-func setNewCPUSet(vmUuid string, cpus string) (int, error) {
-	cpuSetFileName := fmt.Sprintf("/sys/fs/cgroup/cpuset/eve-user-apps/%s/cpuset.cpus", vmUuid)
+func setNewCPUSet(vmUUIDAndVersion string, cpus string) error {
+	cpuSetFileName := fmt.Sprintf("/sys/fs/cgroup/cpuset/eve-user-apps/%s/cpuset.cpus", vmUUIDAndVersion)
 	subCommand := fmt.Sprintf("echo %s > %s", cpus, cpuSetFileName)
 	_, err := exec.Command("chroot", "/hostfs", "sh", "-c", subCommand).Output()
 	if err != nil {
 		// Most probably the file has not been created yet
-		return -1, err
+		return err
 	}
-	return 0, nil
+	return nil
 }
 
 func excludeCPUfromSharedList(cpu int, ctx *domainContext) {
@@ -1158,8 +1158,8 @@ func excludeCPUfromSharedList(cpu int, ctx *domainContext) {
 		}
 		if changed {
 			curConfig.VmConfig.CPUs = constructSharedCPUmask(curDescriptor.CPUsSet)
-			ret, err := setNewCPUSet(curConfig.GetTaskName(), curConfig.VmConfig.CPUs)
-			if ret != 0 {
+			err := setNewCPUSet(curConfig.GetTaskName(), curConfig.VmConfig.CPUs)
+			if err != nil {
 				log.Errorf("@ohm: Failed to set new CPU set for %s: %s", curConfig.DisplayName, err)
 			}
 		}
@@ -2306,8 +2306,67 @@ func handleDelete(ctx *domainContext, key string, status *types.DomainStatus) {
 	// No point in publishing metrics any more
 	ctx.pubDomainMetric.Unpublish(status.Key())
 
+	if status.CPUsPinned {
+		ctx.vmResourcesLock.Lock()
+		freePinnedCPUs(ctx, status)
+		addCpusToNonPinnedVMs(ctx)
+		ctx.vmResourcesLock.Unlock()
+	}
+
 	log.Functionf("handleDelete(%v) DONE for %s",
 		status.UUIDandVersion, status.DisplayName)
+}
+
+func addCpusToNonPinnedVMs(ctx *domainContext) {
+	sharedCPUMaskString := constructSharedCPUMaskString(ctx)
+	for vmUuid, vmDescriptor := range ctx.vmDescriptor {
+		status := lookupDomainStatusByUUID(ctx, vmUuid)
+		if status == nil {
+			continue
+		}
+		if !status.CPUsPinned {
+			for cpu, pinned := range ctx.hostCpusPinned {
+				if !pinned {
+					vmDescriptor.CPUsSet[cpu] = true
+				}
+			}
+			err := setNewCPUSet(status.GetTaskName(), sharedCPUMaskString)
+			if err != nil {
+				log.Errorf("Failed to add a CPU to the CPU set ov %s", status.DisplayName)
+			}
+		}
+	}
+
+}
+
+func constructSharedCPUMaskString(ctx *domainContext) string {
+	result := ""
+	for cpu, pinned := range ctx.hostCpusPinned {
+		if !pinned {
+			addToMask(cpu, &result)
+		}
+	}
+	return result
+}
+
+func addToMask(cpu int, s *string) {
+	if s == nil {
+		return
+	}
+	if *s == "" {
+		*s = fmt.Sprintf("%d", cpu)
+	} else {
+		*s = fmt.Sprintf("%s,%d", *s, cpu)
+	}
+}
+
+func freePinnedCPUs(ctx *domainContext, status *types.DomainStatus) {
+	for cpu, pinned := range ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet {
+		if pinned {
+			ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[cpu] = false
+			ctx.hostCpusPinned[cpu] = false
+		}
+	}
 }
 
 // DomainCreate is a wrapper for domain creation
