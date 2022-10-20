@@ -122,10 +122,13 @@ type domainContext struct {
 	processCloudInitMultiPart bool
 	publishTicker             flextimer.FlexTickerHandle
 	// cli options
-	versionPtr      *bool
-	hypervisorPtr   *string
-	vmDescriptor    map[uuid.UUID]VmDesctiptor
-	vmResourcesLock sync.Mutex
+	versionPtr    *bool
+	hypervisorPtr *string
+	// CPUs management
+	vmDescriptor       map[uuid.UUID]VmDesctiptor
+	vmResourcesLock    sync.Mutex
+	cpusReservedForEve int
+	hostCpusPinned     map[int]bool
 }
 
 // AddAgentSpecificCLIFlags adds CLI options
@@ -163,12 +166,23 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 		cipherMetrics:       cipher.NewAgentMetrics(agentName),
 		metricInterval:      10,
 		vmDescriptor:        make(map[uuid.UUID]VmDesctiptor),
+		hostCpusPinned:      make(map[int]bool),
+		cpusReservedForEve:  2,
 	}
 	agentbase.Init(&domainCtx, logger, log, agentName,
 		agentbase.WithArguments(arguments))
 
 	var err error
 	handlersInit()
+
+	hostCpusNum, err := getHostCPUsNum()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for cpu := 0; cpu < hostCpusNum; cpu++ {
+		domainCtx.hostCpusPinned[cpu] = false
+	}
 
 	if *domainCtx.versionPtr {
 		fmt.Printf("%s: %s\n", agentName, Version)
@@ -1090,10 +1104,6 @@ func lookupDomainConfig(ctx *domainContext, key string) *types.DomainConfig {
 	return &config
 }
 
-var cpusReservedForEve = 2
-var cpusPinnedSet = map[int]bool{0: false, 1: false}
-var cpusSharedSet = map[int]bool{0: true, 1: true}
-
 func constructSharedCPUmask(cpus map[int]bool) string {
 	mask := ""
 	for cpu, used := range cpus {
@@ -1155,7 +1165,6 @@ func excludeCPUfromSharedList(cpu int, ctx *domainContext) {
 		}
 		log.Errorf("@ohm: CPU %d in %s is used: %t", cpu, curConfig.DisplayName, curDescriptor.CPUsSet[cpu])
 	}
-	cpusSharedSet[cpu] = false
 }
 
 func assignPinnedCPU(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig, cpu int) {
@@ -1166,13 +1175,7 @@ func assignPinnedCPU(status *types.DomainStatus, ctx *domainContext, config *typ
 	} else {
 		config.VmConfig.CPUs = fmt.Sprintf("%s,%d", config.VmConfig.CPUs, cpu)
 	}
-	cpusPinnedSet[cpu] = true
-}
-
-func freePinnedCPU(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig, cpu int) {
-	log.Errorf("@ohm: free pinned CPU %d to %s", cpu, status.DisplayName)
-	ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[cpu] = false
-	cpusPinnedSet[cpu] = false
+	ctx.hostCpusPinned[cpu] = true
 }
 
 func getHostCPUsNum() (int, error) {
@@ -1197,19 +1200,13 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 		publishDomainStatus(ctx, status)
 	}
 	if config.VmConfig.CPUsPinned { // Pin the CPU
-		for i := cpusReservedForEve; i < maxHostCpus; i++ {
-			pinned, exists := cpusPinnedSet[i]
-			// Do we have this CPU ever used?
-			if exists { // Yes, the CPU has been used
-				// Is it pinned at the moment?
-				if !pinned { // No, it's not used at the moment
-					assignPinnedCPU(status, ctx, config, i)
-					cpusAssignedNum++
-				} // Yes, the CPU is used. Skip and go to the next CPU
-			} else { // No, the CPU has never been used. Can be pinned now
+		for i := ctx.cpusReservedForEve; i < maxHostCpus; i++ {
+			pinned, _ := ctx.hostCpusPinned[i]
+			// Is it pinned at the moment?
+			if !pinned { // No, it's not used at the moment
 				assignPinnedCPU(status, ctx, config, i)
 				cpusAssignedNum++
-			}
+			} // Yes, the CPU is used. Skip and go to the next CPU
 			if cpusAssignedNum == config.VmConfig.VCpus {
 				break
 			}
@@ -1219,8 +1216,8 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 			log.Errorf("@ohm: Failed to allocate necessary amount of CPUs (assigned %d, need %d)", cpusAssignedNum, config.VmConfig.VCpus)
 			for cpuToCheck, pinned := range ctx.vmDescriptor[config.UUIDandVersion.UUID].CPUsSet {
 				if pinned {
-					cpusPinnedSet[cpuToCheck] = false
-					// Not yet excluded from the list pf shared CPUs, so not necessary to remove here
+					ctx.hostCpusPinned[cpuToCheck] = false
+					// Not yet excluded from the list of shared CPUs, so not necessary to remove here
 				}
 			}
 			return fmt.Errorf("failed to allocate necessary amount of CPUs")
@@ -1233,10 +1230,9 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 		}
 	} else { // VM has no pinned CPUs, assign all the CPUs from the shared set
 		for i := 0; i < maxHostCpus; i++ {
-			shared, exists := cpusSharedSet[i]
-			if !exists || shared {
+			pinned, _ := ctx.hostCpusPinned[i]
+			if !pinned {
 				log.Errorf("@ohm: assign non-pinned CPU %d to %s", i, status.DisplayName)
-				cpusSharedSet[i] = true
 				ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[i] = true
 				if config.VmConfig.CPUs == "" {
 					config.VmConfig.CPUs = fmt.Sprintf("%d", i)
