@@ -1104,19 +1104,25 @@ func lookupDomainConfig(ctx *domainContext, key string) *types.DomainConfig {
 	return &config
 }
 
-func constructSharedCPUmask(cpus map[int]bool) string {
-	mask := ""
-	for cpu, used := range cpus {
-		if !used {
-			continue
-		}
-		if mask == "" {
-			mask = fmt.Sprintf("%d", cpu)
-		} else {
-			mask = fmt.Sprintf("%s,%d", mask, cpu)
+func constructSharedCPUMaskString(ctx *domainContext) string {
+	result := ""
+	for cpu, pinned := range ctx.hostCpusPinned {
+		if !pinned {
+			addToMask(cpu, &result)
 		}
 	}
-	return mask
+	return result
+}
+
+func addToMask(cpu int, s *string) {
+	if s == nil {
+		return
+	}
+	if *s == "" {
+		*s = fmt.Sprintf("%d", cpu)
+	} else {
+		*s = fmt.Sprintf("%s,%d", *s, cpu)
+	}
 }
 
 func setNewCPUSet(vmUUIDAndVersion string, cpus string) error {
@@ -1130,8 +1136,9 @@ func setNewCPUSet(vmUUIDAndVersion string, cpus string) error {
 	return nil
 }
 
-func excludeCPUfromSharedList(cpu int, ctx *domainContext) {
+func excludeCPUFromNonPinnedVMs(cpu int, ctx *domainContext) {
 	log.Errorf("@ohm: Pinning a CPU (%d), exclude it from the shared CPU sets...", cpu)
+	ctx.hostCpusPinned[cpu] = true
 	//Exclude the CPU from the shared list and fix the cgroups of previously created VMs
 	for vmUuid := range ctx.vmDescriptor {
 		curDescriptor := ctx.vmDescriptor[vmUuid]
@@ -1149,15 +1156,15 @@ func excludeCPUfromSharedList(cpu int, ctx *domainContext) {
 			continue
 		}
 		changed := false
-		for cpuToCheck, used := range curDescriptor.CPUsSet {
-			if cpuToCheck == cpu && used {
+		for cpuToCheck, pinned := range curDescriptor.CPUsSet {
+			if cpuToCheck == cpu && pinned {
 				// Found previously assigned CPU. Have to exclude it
 				curDescriptor.CPUsSet[cpu] = false
 				changed = true
 			}
 		}
 		if changed {
-			curConfig.VmConfig.CPUs = constructSharedCPUmask(curDescriptor.CPUsSet)
+			curConfig.VmConfig.CPUs = constructSharedCPUMaskString(ctx)
 			err := setNewCPUSet(curConfig.GetTaskName(), curConfig.VmConfig.CPUs)
 			if err != nil {
 				log.Errorf("@ohm: Failed to set new CPU set for %s: %s", curConfig.DisplayName, err)
@@ -1170,6 +1177,7 @@ func excludeCPUfromSharedList(cpu int, ctx *domainContext) {
 func assignPinnedCPU(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig, cpu int) {
 	log.Errorf("@ohm: assign pinned CPU %d to %s", cpu, status.DisplayName)
 	ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[cpu] = true
+	ctx.hostCpusPinned[cpu] = true
 	if config.VmConfig.CPUs == "" {
 		config.VmConfig.CPUs = fmt.Sprintf("%d", cpu)
 	} else {
@@ -1225,7 +1233,7 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 		// If we are here, we assigned CPUs successfully. Remove them from the shared list.
 		for cpu, used := range ctx.vmDescriptor[config.UUIDandVersion.UUID].CPUsSet {
 			if used {
-				excludeCPUfromSharedList(cpu, ctx)
+				excludeCPUFromNonPinnedVMs(cpu, ctx)
 			}
 		}
 	} else { // VM has no pinned CPUs, assign all the CPUs from the shared set
@@ -2332,32 +2340,11 @@ func addCpusToNonPinnedVMs(ctx *domainContext) {
 			}
 			err := setNewCPUSet(status.GetTaskName(), sharedCPUMaskString)
 			if err != nil {
-				log.Errorf("Failed to add a CPU to the CPU set ov %s", status.DisplayName)
+				log.Errorf("@ohm: Failed to add a CPU to the CPU set of %s", status.DisplayName)
 			}
 		}
 	}
 
-}
-
-func constructSharedCPUMaskString(ctx *domainContext) string {
-	result := ""
-	for cpu, pinned := range ctx.hostCpusPinned {
-		if !pinned {
-			addToMask(cpu, &result)
-		}
-	}
-	return result
-}
-
-func addToMask(cpu int, s *string) {
-	if s == nil {
-		return
-	}
-	if *s == "" {
-		*s = fmt.Sprintf("%d", cpu)
-	} else {
-		*s = fmt.Sprintf("%s,%d", *s, cpu)
-	}
 }
 
 func freePinnedCPUs(ctx *domainContext, status *types.DomainStatus) {
