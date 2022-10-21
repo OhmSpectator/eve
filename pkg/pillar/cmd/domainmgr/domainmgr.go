@@ -1178,12 +1178,13 @@ func assignPinnedCPU(status *types.DomainStatus, ctx *domainContext, config *typ
 	log.Errorf("@ohm: assign pinned CPU %d to %s", cpu, status.DisplayName)
 	ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[cpu] = true
 	ctx.hostCpusPinned[cpu] = true
-	if config.VmConfig.CPUs == "" {
-		config.VmConfig.CPUs = fmt.Sprintf("%d", cpu)
-	} else {
-		config.VmConfig.CPUs = fmt.Sprintf("%s,%d", config.VmConfig.CPUs, cpu)
-	}
-	ctx.hostCpusPinned[cpu] = true
+	addToMask(cpu, &config.VmConfig.CPUs)
+}
+
+func assignNonPinnedCPU(status *types.DomainStatus, ctx *domainContext, config *types.DomainConfig, cpu int) {
+	log.Errorf("@ohm: assign non-pinned CPU %d to %s", cpu, status.DisplayName)
+	ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[cpu] = true
+	addToMask(cpu, &config.VmConfig.CPUs)
 }
 
 func getHostCPUsNum() (int, error) {
@@ -1214,7 +1215,7 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 			if !pinned { // No, it's not used at the moment
 				assignPinnedCPU(status, ctx, config, i)
 				cpusAssignedNum++
-			} // Yes, the CPU is used. Skip and go to the next CPU
+			}
 			if cpusAssignedNum == config.VmConfig.VCpus {
 				break
 			}
@@ -1225,7 +1226,6 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 			for cpuToCheck, pinned := range ctx.vmDescriptor[config.UUIDandVersion.UUID].CPUsSet {
 				if pinned {
 					ctx.hostCpusPinned[cpuToCheck] = false
-					// Not yet excluded from the list of shared CPUs, so not necessary to remove here
 				}
 			}
 			return fmt.Errorf("failed to allocate necessary amount of CPUs")
@@ -1240,9 +1240,7 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 		for i := 0; i < maxHostCpus; i++ {
 			pinned, _ := ctx.hostCpusPinned[i]
 			if !pinned {
-				log.Errorf("@ohm: assign non-pinned CPU %d to %s", i, status.DisplayName)
-				ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[i] = true
-				addToMask(i, &config.VmConfig.CPUs)
+				assignNonPinnedCPU(status, ctx, config, i)
 			}
 		}
 	}
@@ -2133,6 +2131,7 @@ func handleModify(ctx *domainContext, key string,
 			publishDomainStatus(ctx, status)
 			return
 		}
+		// Before the restart, restore the cpumask from the descriptor
 		for cpu, used := range ctx.vmDescriptor[config.UUIDandVersion.UUID].CPUsSet {
 			if used {
 				addToMask(cpu, &config.VmConfig.CPUs)
