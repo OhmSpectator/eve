@@ -1242,11 +1242,7 @@ func assignCPUs(status *types.DomainStatus, ctx *domainContext, config *types.Do
 			if !pinned {
 				log.Errorf("@ohm: assign non-pinned CPU %d to %s", i, status.DisplayName)
 				ctx.vmDescriptor[status.UUIDandVersion.UUID].CPUsSet[i] = true
-				if config.VmConfig.CPUs == "" {
-					config.VmConfig.CPUs = fmt.Sprintf("%d", i)
-				} else {
-					config.VmConfig.CPUs = fmt.Sprintf("%s,%d", config.VmConfig.CPUs, i)
-				}
+				addToMask(i, &config.VmConfig.CPUs)
 			}
 		}
 	}
@@ -2137,6 +2133,12 @@ func handleModify(ctx *domainContext, key string,
 			publishDomainStatus(ctx, status)
 			return
 		}
+		for cpu, used := range ctx.vmDescriptor[config.UUIDandVersion.UUID].CPUsSet {
+			if used {
+				addToMask(cpu, &config.VmConfig.CPUs)
+			}
+		}
+		log.Errorf("@ohm: mask for a starting %s: %s", config.DisplayName, config.VmConfig.CPUs)
 		updateStatusFromConfig(status, *config)
 		doActivate(ctx, *config, status)
 		changed = true
