@@ -1179,6 +1179,128 @@ func setCgroupCpuset(ctx *domainContext, uuid uuid.UUID, cpus string) error {
 	return nil
 }
 
+func constructNonPinnedCpumaskString(ctx *domainContext) string {
+	result := ""
+	for cpu, pinned := range ctx.hostCpusPinned {
+		if !pinned {
+			addToMask(cpu, &result)
+		}
+	}
+	return result
+}
+
+func addToMask(cpu int, s *string) {
+	if s == nil {
+		return
+	}
+	if *s == "" {
+		*s = fmt.Sprintf("%d", cpu)
+	} else {
+		*s = fmt.Sprintf("%s,%d", *s, cpu)
+	}
+}
+
+func excludeCPUFromNonPinnedVMs(ctx *domainContext, cpu int) error {
+	log.Functionf("Pinning a CPU (%d), exclude it from the other VMs CPU sets...", cpu)
+	ctx.hostCpusPinned[cpu] = true
+	//Exclude the CPU from the shared list and fix the cgroups of previously created VMs
+	for vmUUID := range ctx.resourcesUsedByVMs {
+		vmToCheck := ctx.resourcesUsedByVMs[vmUUID]
+		// Need the Status here only to get the proper Key to find the corresponding Config
+		vmStatus := lookupDomainStatusByUUID(ctx, vmUUID)
+		if vmStatus == nil {
+			//Most probably the status has not been created yet
+			continue
+		}
+		if vmStatus.VmConfig.CPUsPinned {
+			// We need to check only non-pinned VMs
+			continue
+		}
+		vmConfig := lookupDomainConfig(ctx, vmStatus.Key())
+		if vmConfig == nil {
+			// Strange situation. Should be investigated if happens.
+			log.Warnf("Failed to find the DomainConfig corresponding to a DomainStatus (%s)", vmStatus.DisplayName)
+			continue
+		}
+		cpuSetChanged := false
+		for cpuToCheck, used := range vmToCheck.CPUSet {
+			if cpuToCheck == cpu && used {
+				// Found previously assigned CPU. Have to exclude it
+				vmToCheck.CPUSet[cpu] = false
+				cpuSetChanged = true
+			}
+		}
+		// If at least one change in the CPU set of the VM happened, adapt the corresponding cgroup
+		if cpuSetChanged {
+			vmConfig.VmConfig.CPUs = constructNonPinnedCpumaskString(ctx)
+			err := setCgroupCpuset(ctx, vmUUID, vmConfig.VmConfig.CPUs)
+			if err != nil {
+				return fmt.Errorf("failed to redistribute CPUs between VMs, can affect the inter-VM isolation")
+			}
+			log.Functionf("The CPU set for %s has been changed to: %s", vmConfig.DisplayName, vmConfig.CPUs)
+		}
+	}
+	return nil
+}
+
+func assignAndPinCPU(ctx *domainContext, config *types.DomainConfig, cpu int) {
+	log.Functionf("Assign pinned CPU %d to %s", cpu, config.DisplayName)
+	ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet[cpu] = true
+	ctx.hostCpusPinned[cpu] = true
+	addToMask(cpu, &config.VmConfig.CPUs)
+}
+
+func assignCPU(ctx *domainContext, config *types.DomainConfig, cpu int) {
+	log.Functionf("Assign non-pinned CPU %d to %s", cpu, config.DisplayName)
+	ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet[cpu] = true
+	addToMask(cpu, &config.VmConfig.CPUs)
+}
+
+func assignCPUs(ctx *domainContext, config *types.DomainConfig) error {
+	var cpusAssignedNum = 0
+	if config.VmConfig.CPUsPinned { // Pin the CPU
+		for i := ctx.cpusReservedForEve; i < ctx.hostCpusNum; i++ {
+			pinned, _ := ctx.hostCpusPinned[i]
+			// Is it pinned at the moment?
+			if !pinned { // No, it's not used at the moment
+				assignAndPinCPU(ctx, config, i)
+				cpusAssignedNum++
+			}
+			if cpusAssignedNum == config.VmConfig.VCpus {
+				break
+			}
+		}
+		// Check,that all the necessary CPUs were found
+		if cpusAssignedNum != config.VmConfig.VCpus {
+			log.Errorf("Failed to allocate necessary amount of CPUs (assigned %d, need %d)", cpusAssignedNum, config.VmConfig.VCpus)
+			// Clean up already assign CPUs
+			for cpuToCheck, pinned := range ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet {
+				if pinned {
+					ctx.hostCpusPinned[cpuToCheck] = false
+				}
+			}
+			return fmt.Errorf("failed to allocate necessary amount of CPUs")
+		}
+		// If we are here, we assigned CPUs successfully. Remove them from the shared list.
+		for cpu, used := range ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet {
+			if used {
+				err := excludeCPUFromNonPinnedVMs(ctx, cpu)
+				if err != nil {
+					return fmt.Errorf("failed to reassign CPUs between the Applications")
+				}
+			}
+		}
+	} else { // VM has no pinned CPUs, assign all the CPUs from the shared set
+		for i := 0; i < ctx.hostCpusNum; i++ {
+			pinned, _ := ctx.hostCpusPinned[i]
+			if !pinned {
+				assignCPU(ctx, config, i)
+			}
+		}
+	}
+	return nil
+}
+
 func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 
 	log.Functionf("handleCreate(%v) for %s",
@@ -1203,6 +1325,14 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 	}
 
 	ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID] = ResourcesUsedByVM{CPUSet: make(map[int]bool)}
+	err := assignCPUs(ctx, config)
+	if err != nil {
+		status.PendingAdd = false
+		status.SetErrorNow(err.Error())
+		publishDomainStatus(ctx, &status)
+		return
+	}
+	log.Functionf("CPUs for %s assigned: %s", config.DisplayName, config.VmConfig.CPUs)
 
 	// Note that the -emu interface doesn't exist until after boot of the domU, but we
 	// initialize the VifList here with the VifUsed.
@@ -1213,7 +1343,7 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 		config.UUIDandVersion, status.DomainName,
 		config.DisplayName)
 
-	if err := configToStatus(ctx, *config, &status); err != nil {
+	if err = configToStatus(ctx, *config, &status); err != nil {
 		log.Errorf("Failed to create DomainStatus from %v: %s",
 			config, err)
 		status.PendingAdd = false
