@@ -71,6 +71,13 @@ func isPort(ctx *domainContext, ifname string) bool {
 	return types.IsPort(ctx.deviceNetworkStatus, ifname)
 }
 
+// ResourcesUsedByVM stores information about dynamic resources used by an Application
+type ResourcesUsedByVM struct {
+	// The set of CPUs used by the Application.
+	// Indexed by a CPU number. Contains `true` if the CPU is used by the Application, `false` otherwise.
+	CPUSet map[int]bool
+}
+
 // Information for handleCreate/Modify/Delete
 type domainContext struct {
 	agentbase.AgentBase
@@ -115,6 +122,17 @@ type domainContext struct {
 	// cli options
 	versionPtr    *bool
 	hypervisorPtr *string
+	// CPUs management
+	// Array of the information about the resources used by Applications.
+	// Each element corresponds to an Application.
+	resourcesUsedByVMs map[uuid.UUID]ResourcesUsedByVM
+	// Number of CPUs reserved for the EVE services and the Applications with no pinned CPUs
+	cpusReservedForEve int
+	// Map of the CPUs used for pinning.
+	// Indexed by CPU number. Stores `true` if the CPU is pinned to an Application, `false` otherwise.
+	hostCpusPinned map[int]bool
+	// Amount of physical CPUs available in the system
+	hostCpusNum int
 }
 
 // AddAgentSpecificCLIFlags adds CLI options
@@ -151,6 +169,9 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 		pids:                make(map[int32]bool),
 		cipherMetrics:       cipher.NewAgentMetrics(agentName),
 		metricInterval:      10,
+		resourcesUsedByVMs:  make(map[uuid.UUID]ResourcesUsedByVM),
+		hostCpusPinned:      make(map[int]bool),
+		cpusReservedForEve:  2,
 	}
 	agentbase.Init(&domainCtx, logger, log, agentName,
 		agentbase.WithArguments(arguments))
@@ -165,6 +186,15 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	hyper, err = hypervisor.GetHypervisor(*domainCtx.hypervisorPtr)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	resources, err := hyper.GetHostCPUMem()
+	if err != nil {
+		log.Fatal(err)
+	}
+	domainCtx.hostCpusNum = int(resources.Ncpus)
+	for cpu := 0; cpu < domainCtx.hostCpusNum; cpu++ {
+		domainCtx.hostCpusPinned[cpu] = false
 	}
 
 	if err := pidfile.CheckAndCreatePidfile(log, agentName); err != nil {
@@ -1171,6 +1201,9 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 		VmConfig:           config.VmConfig,
 		Service:            config.Service,
 	}
+
+	ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID] = ResourcesUsedByVM{CPUSet: make(map[int]bool)}
+
 	// Note that the -emu interface doesn't exist until after boot of the domU, but we
 	// initialize the VifList here with the VifUsed.
 	status.VifList = fillVifUsed(config.VifList)
