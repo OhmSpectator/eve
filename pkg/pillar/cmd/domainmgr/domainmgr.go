@@ -13,9 +13,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/containerd/cgroups"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"io/ioutil"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -1114,6 +1117,36 @@ func lookupDomainConfig(ctx *domainContext, key string) *types.DomainConfig {
 	}
 	config := c.(types.DomainConfig)
 	return &config
+}
+
+func setCgroupCpuset(ctx *domainContext, uuid uuid.UUID, cpus string) error {
+	status := lookupDomainStatusByUUID(ctx, uuid)
+	if status == nil {
+		log.Warnf("Failed to find Status for %s", uuid.String())
+		return nil
+	}
+
+	config := lookupDomainConfig(ctx, status.Key())
+	if config == nil {
+		log.Warnf("Failed to find Config for %s", status.DisplayName)
+		return nil
+	}
+
+	cgroupName := filepath.Join(containerd.GetServicesNamespace(), config.GetTaskName())
+	cgroupPath := cgroups.StaticPath(cgroupName)
+	controller, err := cgroups.Load(cgroups.V1, cgroupPath)
+	if err != nil {
+		// It's still not an error, since the path may still not exist
+		log.Warnf("Failed to find cgroups directory for %s", config.DisplayName)
+		return nil
+	}
+
+	err = controller.Update(&specs.LinuxResources{CPU: &specs.LinuxCPU{Cpus: cpus}})
+	if err != nil {
+		log.Warnf("Failed to update CPU set for %s", config.DisplayName)
+		return err
+	}
+	return nil
 }
 
 func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
