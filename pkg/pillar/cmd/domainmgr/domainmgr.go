@@ -2184,6 +2184,13 @@ func handleModify(ctx *domainContext, key string,
 			publishDomainStatus(ctx, status)
 			return
 		}
+		// Before the restart, restore the cpumask from the stored data
+		for cpu, used := range ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet {
+			if used {
+				addToMask(cpu, &config.VmConfig.CPUs)
+			}
+		}
+		log.Functionf("CPUs for a starting %s: %s", config.DisplayName, config.VmConfig.CPUs)
 		updateStatusFromConfig(status, *config)
 		doActivate(ctx, *config, status)
 		changed = true
