@@ -126,6 +126,8 @@ type domainContext struct {
 	// Array of the information about the resources used by Applications.
 	// Each element corresponds to an Application.
 	resourcesUsedByVMs map[uuid.UUID]ResourcesUsedByVM
+	// Locks access to the resourcesUsedByVMs array
+	vmResourcesLock sync.Mutex
 	// Number of CPUs reserved for the EVE services and the Applications with no pinned CPUs
 	cpusReservedForEve int
 	// Map of the CPUs used for pinning.
@@ -1325,6 +1327,10 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 	}
 
 	ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID] = ResourcesUsedByVM{CPUSet: make(map[int]bool)}
+	// Not to get races with the other threads, that try to assign the CPUs at the moment, we have to lock here
+	// Will release after the corresponding control files are created and the arguments are passed to containerd
+	ctx.vmResourcesLock.Lock()
+	defer ctx.vmResourcesLock.Unlock()
 	err := assignCPUs(ctx, config)
 	if err != nil {
 		status.PendingAdd = false
@@ -2371,8 +2377,10 @@ func handleDelete(ctx *domainContext, key string, status *types.DomainStatus) {
 	ctx.pubDomainMetric.Unpublish(status.Key())
 
 	if status.CPUsPinned {
+		ctx.vmResourcesLock.Lock()
 		freePinnedCPUs(ctx, status)
 		addCpusToNonPinnedVMs(ctx)
+		ctx.vmResourcesLock.Unlock()
 	}
 
 	log.Functionf("handleDelete(%v) DONE for %s",
