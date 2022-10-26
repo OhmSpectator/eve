@@ -2363,8 +2363,44 @@ func handleDelete(ctx *domainContext, key string, status *types.DomainStatus) {
 	// No point in publishing metrics any more
 	ctx.pubDomainMetric.Unpublish(status.Key())
 
+	if status.CPUsPinned {
+		freePinnedCPUs(ctx, status)
+		addCpusToNonPinnedVMs(ctx)
+	}
+
 	log.Functionf("handleDelete(%v) DONE for %s",
 		status.UUIDandVersion, status.DisplayName)
+}
+
+func addCpusToNonPinnedVMs(ctx *domainContext) {
+	sharedCpumaskString := constructNonPinnedCpumaskString(ctx)
+	for vmUUID, vmResources := range ctx.resourcesUsedByVMs {
+		status := lookupDomainStatusByUUID(ctx, vmUUID)
+		if status == nil {
+			continue
+		}
+		if !status.CPUsPinned {
+			for cpu, pinned := range ctx.hostCpusPinned {
+				if !pinned {
+					vmResources.CPUSet[cpu] = true
+				}
+			}
+			err := setCgroupCpuset(ctx, vmUUID, sharedCpumaskString)
+			if err != nil {
+				log.Warnf("Failed to add CPUs to the CPU set of %s: %s", status.DisplayName, err)
+			}
+		}
+	}
+
+}
+
+func freePinnedCPUs(ctx *domainContext, status *types.DomainStatus) {
+	for cpu, used := range ctx.resourcesUsedByVMs[status.UUIDandVersion.UUID].CPUSet {
+		if used {
+			ctx.resourcesUsedByVMs[status.UUIDandVersion.UUID].CPUSet[cpu] = false
+			ctx.hostCpusPinned[cpu] = false
+		}
+	}
 }
 
 // DomainCreate is a wrapper for domain creation
