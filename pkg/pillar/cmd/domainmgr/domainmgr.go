@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/containerd/cgroups"
+	"github.com/lf-edge/eve/pkg/pillar/cmd/cpuallocator"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"io/ioutil"
 	"os"
@@ -123,18 +124,7 @@ type domainContext struct {
 	versionPtr    *bool
 	hypervisorPtr *string
 	// CPUs management
-	// Array of the information about the resources used by Applications.
-	// Each element corresponds to an Application.
-	resourcesUsedByVMs map[uuid.UUID]ResourcesUsedByVM
-	// Locks access to the resourcesUsedByVMs array
-	vmResourcesLock sync.Mutex
-	// Number of CPUs reserved for the EVE services and the Applications with no pinned CPUs
-	cpusReservedForEve int
-	// Map of the CPUs used for pinning.
-	// Indexed by CPU number. Stores `true` if the CPU is pinned to an Application, `false` otherwise.
-	hostCpusPinned map[int]bool
-	// Amount of physical CPUs available in the system
-	hostCpusNum int
+	cpuAllocator *cpuallocator.CPUAllocator
 }
 
 // AddAgentSpecificCLIFlags adds CLI options
@@ -171,9 +161,6 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 		pids:                make(map[int32]bool),
 		cipherMetrics:       cipher.NewAgentMetrics(agentName),
 		metricInterval:      10,
-		resourcesUsedByVMs:  make(map[uuid.UUID]ResourcesUsedByVM),
-		hostCpusPinned:      make(map[int]bool),
-		cpusReservedForEve:  2,
 	}
 	agentbase.Init(&domainCtx, logger, log, agentName,
 		agentbase.WithArguments(arguments))
@@ -194,9 +181,9 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	if err != nil {
 		log.Fatal(err)
 	}
-	domainCtx.hostCpusNum = int(resources.Ncpus)
-	for cpu := 0; cpu < domainCtx.hostCpusNum; cpu++ {
-		domainCtx.hostCpusPinned[cpu] = false
+	// TODO: Read the numReserved value from the kernel arguments
+	if domainCtx.cpuAllocator, err = cpuallocator.Init(int(resources.Ncpus), 2); err != nil {
+		log.Fatal(err)
 	}
 
 	if err := pidfile.CheckAndCreatePidfile(log, agentName); err != nil {
@@ -733,17 +720,32 @@ func xenCfgFilename(appNum int) string {
 // Notify simple struct to pass notification messages
 type Notify struct{}
 
+type Channels struct {
+	configChannel chan<- Notify
+	cpuChannel    chan<- Notify
+}
+
 // We have one goroutine per provisioned domU object.
 // Channel is used to send notifications about config (add and updates)
 // Channel is closed when the object is deleted
 // The go-routine owns writing status for the object
 // The key in the map is the objects Key() - UUID in this case
-type handlers map[string]chan<- Notify
+type handlers map[string]Channels
 
 var handlerMap handlers
 
 func handlersInit() {
 	handlerMap = make(handlers)
+}
+
+func triggerCPUNotification() {
+	for _, handler := range handlerMap {
+		select {
+		case handler.cpuChannel <- Notify{}:
+		default:
+			log.Warnf("Already sent a CPU Notify...")
+		}
+	}
 }
 
 // Wrappers around handleCreate, handleModify, and handleDelete
@@ -759,7 +761,7 @@ func handleDomainModify(ctxArg interface{}, key string, configArg interface{},
 		log.Fatalf("handleDomainModify called on config that does not exist")
 	}
 	select {
-	case h <- Notify{}:
+	case h.configChannel <- Notify{}:
 		log.Functionf("handleDomainModify(%s) sent notify", key)
 	default:
 		// handler is slow
@@ -776,13 +778,15 @@ func handleDomainCreate(ctxArg interface{}, key string, configArg interface{}) {
 	if ok {
 		log.Fatalf("handleDomainCreate called on config that already exists")
 	}
-	h1 := make(chan Notify, 1)
+	hConfig := make(chan Notify, 1)
+	hCpu := make(chan Notify, 1)
+	h1 := Channels{configChannel: hConfig, cpuChannel: hCpu}
 	handlerMap[config.Key()] = h1
 	log.Functionf("Creating %s at %s", "runHandler", agentlog.GetMyStack())
-	go runHandler(ctx, key, h1)
+	go runHandler(ctx, key, hConfig, hCpu)
 	h = h1
 	select {
-	case h <- Notify{}:
+	case h.configChannel <- Notify{}:
 		log.Functionf("handleDomainCreate(%s) sent notify", key)
 	default:
 		// Shouldn't happen since we just created channel
@@ -804,8 +808,9 @@ func handleDomainDelete(ctxArg interface{}, key string,
 	// Do we have a channel/goroutine?
 	h, ok := handlerMap[key]
 	if ok {
-		log.Functionf("Closing channel")
-		close(h)
+		log.Functionf("Closing channels")
+		close(h.cpuChannel)
+		close(h.configChannel)
 		delete(handlerMap, key)
 	} else {
 		log.Tracef("handleDomainDelete: unknown %s", key)
@@ -816,7 +821,7 @@ func handleDomainDelete(ctxArg interface{}, key string,
 
 // Server for each domU
 // Runs timer every 30 seconds to update status
-func runHandler(ctx *domainContext, key string, c <-chan Notify) {
+func runHandler(ctx *domainContext, key string, configChannel <-chan Notify, cpuChannel <-chan Notify) {
 
 	log.Functionf("runHandler starting")
 
@@ -829,7 +834,7 @@ func runHandler(ctx *domainContext, key string, c <-chan Notify) {
 	closed := false
 	for !closed {
 		select {
-		case _, ok := <-c:
+		case _, ok := <-configChannel:
 			if ok {
 				sub := ctx.subDomainConfig
 				c, err := sub.Get(key)
@@ -851,6 +856,21 @@ func runHandler(ctx *domainContext, key string, c <-chan Notify) {
 					handleDelete(ctx, key, status)
 				}
 				closed = true
+			}
+		case _, ok := <-cpuChannel:
+			if ok {
+				sub := ctx.subDomainConfig
+				c, err := sub.Get(key)
+				if err != nil {
+					log.Errorf("runHandler no config for %s", key)
+					continue
+				}
+				config := c.(types.DomainConfig)
+				if !config.VmConfig.CPUsPinned {
+					if err := updateNonPinnedCPUs(ctx, &config); err != nil {
+						log.Warnf("failed to redistribute CPUs in %s", config.DisplayName)
+					}
+				}
 			}
 		case <-ticker.C:
 			log.Tracef("runHandler(%s) timer", key)
@@ -1151,19 +1171,7 @@ func lookupDomainConfig(ctx *domainContext, key string) *types.DomainConfig {
 	return &config
 }
 
-func setCgroupCpuset(ctx *domainContext, uuid uuid.UUID, cpus string) error {
-	status := lookupDomainStatusByUUID(ctx, uuid)
-	if status == nil {
-		log.Warnf("Failed to find Status for %s", uuid.String())
-		return nil
-	}
-
-	config := lookupDomainConfig(ctx, status.Key())
-	if config == nil {
-		log.Warnf("Failed to find Config for %s", status.DisplayName)
-		return nil
-	}
-
+func setCgroupCpuset(config *types.DomainConfig) error {
 	cgroupName := filepath.Join(containerd.GetServicesNamespace(), config.GetTaskName())
 	cgroupPath := cgroups.StaticPath(cgroupName)
 	controller, err := cgroups.Load(cgroups.V1, cgroupPath)
@@ -1172,8 +1180,7 @@ func setCgroupCpuset(ctx *domainContext, uuid uuid.UUID, cpus string) error {
 		log.Warnf("Failed to find cgroups directory for %s", config.DisplayName)
 		return nil
 	}
-
-	err = controller.Update(&specs.LinuxResources{CPU: &specs.LinuxCPU{Cpus: cpus}})
+	err = controller.Update(&specs.LinuxResources{CPU: &specs.LinuxCPU{Cpus: config.VmConfig.CPUs}})
 	if err != nil {
 		log.Warnf("Failed to update CPU set for %s", config.DisplayName)
 		return err
@@ -1183,10 +1190,8 @@ func setCgroupCpuset(ctx *domainContext, uuid uuid.UUID, cpus string) error {
 
 func constructNonPinnedCpumaskString(ctx *domainContext) string {
 	result := ""
-	for cpu, pinned := range ctx.hostCpusPinned {
-		if !pinned {
-			addToMask(cpu, &result)
-		}
+	for _, cpu := range ctx.cpuAllocator.GetAllFree() {
+		addToMask(cpu, &result)
 	}
 	return result
 }
@@ -1202,103 +1207,29 @@ func addToMask(cpu int, s *string) {
 	}
 }
 
-func excludeCPUFromNonPinnedVMs(ctx *domainContext, cpu int) error {
-	log.Functionf("Pinning a CPU (%d), exclude it from the other VMs CPU sets...", cpu)
-	ctx.hostCpusPinned[cpu] = true
-	//Exclude the CPU from the shared list and fix the cgroups of previously created VMs
-	for vmUUID := range ctx.resourcesUsedByVMs {
-		vmToCheck := ctx.resourcesUsedByVMs[vmUUID]
-		// Need the Status here only to get the proper Key to find the corresponding Config
-		vmStatus := lookupDomainStatusByUUID(ctx, vmUUID)
-		if vmStatus == nil {
-			//Most probably the status has not been created yet
-			continue
-		}
-		if vmStatus.VmConfig.CPUsPinned {
-			// We need to check only non-pinned VMs
-			continue
-		}
-		vmConfig := lookupDomainConfig(ctx, vmStatus.Key())
-		if vmConfig == nil {
-			// Strange situation. Should be investigated if happens.
-			log.Warnf("Failed to find the DomainConfig corresponding to a DomainStatus (%s)", vmStatus.DisplayName)
-			continue
-		}
-		cpuSetChanged := false
-		for cpuToCheck, used := range vmToCheck.CPUSet {
-			if cpuToCheck == cpu && used {
-				// Found previously assigned CPU. Have to exclude it
-				vmToCheck.CPUSet[cpu] = false
-				cpuSetChanged = true
-			}
-		}
-		// If at least one change in the CPU set of the VM happened, adapt the corresponding cgroup
-		if cpuSetChanged {
-			vmConfig.VmConfig.CPUs = constructNonPinnedCpumaskString(ctx)
-			err := setCgroupCpuset(ctx, vmUUID, vmConfig.VmConfig.CPUs)
-			if err != nil {
-				return fmt.Errorf("failed to redistribute CPUs between VMs, can affect the inter-VM isolation")
-			}
-			log.Functionf("The CPU set for %s has been changed to: %s", vmConfig.DisplayName, vmConfig.CPUs)
-		}
+func updateNonPinnedCPUs(ctx *domainContext, config *types.DomainConfig) error {
+	config.VmConfig.CPUs = constructNonPinnedCpumaskString(ctx)
+	err := setCgroupCpuset(config)
+	if err != nil {
+		return errors.New("failed to redistribute CPUs between VMs, can affect the inter-VM isolation")
 	}
 	return nil
 }
 
-func assignAndPinCPU(ctx *domainContext, config *types.DomainConfig, cpu int) {
-	log.Functionf("Assign pinned CPU %d to %s", cpu, config.DisplayName)
-	ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet[cpu] = true
-	ctx.hostCpusPinned[cpu] = true
-	addToMask(cpu, &config.VmConfig.CPUs)
-}
-
-func assignCPU(ctx *domainContext, config *types.DomainConfig, cpu int) {
-	log.Functionf("Assign non-pinned CPU %d to %s", cpu, config.DisplayName)
-	ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet[cpu] = true
-	addToMask(cpu, &config.VmConfig.CPUs)
-}
-
 func assignCPUs(ctx *domainContext, config *types.DomainConfig) error {
-	var cpusAssignedNum = 0
 	if config.VmConfig.CPUsPinned { // Pin the CPU
-		for i := ctx.cpusReservedForEve; i < ctx.hostCpusNum; i++ {
-			pinned, _ := ctx.hostCpusPinned[i]
-			// Is it pinned at the moment?
-			if !pinned { // No, it's not used at the moment
-				assignAndPinCPU(ctx, config, i)
-				cpusAssignedNum++
-			}
-			if cpusAssignedNum == config.VmConfig.VCpus {
-				break
-			}
+		cpusToAssign, err := ctx.cpuAllocator.Allocate(config.UUIDandVersion.UUID, config.VCpus)
+		if err != nil {
+			return errors.New("failed to allocate necessary amount of CPUs")
 		}
-		// Check,that all the necessary CPUs were found
-		if cpusAssignedNum != config.VmConfig.VCpus {
-			log.Errorf("Failed to allocate necessary amount of CPUs (assigned %d, need %d)", cpusAssignedNum, config.VmConfig.VCpus)
-			// Clean up already assign CPUs
-			for cpuToCheck, pinned := range ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet {
-				if pinned {
-					ctx.hostCpusPinned[cpuToCheck] = false
-				}
-			}
-			return fmt.Errorf("failed to allocate necessary amount of CPUs")
-		}
-		// If we are here, we assigned CPUs successfully. Remove them from the shared list.
-		for cpu, used := range ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet {
-			if used {
-				err := excludeCPUFromNonPinnedVMs(ctx, cpu)
-				if err != nil {
-					return fmt.Errorf("failed to reassign CPUs between the Applications")
-				}
+		for _, cpu := range cpusToAssign {
+			addToMask(cpu, &config.VmConfig.CPUs)
+			if err != nil {
+				return errors.New("failed to reassign CPUs between the Applications")
 			}
 		}
 	} else { // VM has no pinned CPUs, assign all the CPUs from the shared set
-		for i := 0; i < ctx.hostCpusNum; i++ {
-			pinned, _ := ctx.hostCpusPinned[i]
-			if !pinned {
-				assignCPU(ctx, config, i)
-			}
-		}
+		config.VmConfig.CPUs = constructNonPinnedCpumaskString(ctx)
 	}
 	return nil
 }
@@ -1326,15 +1257,11 @@ func handleCreate(ctx *domainContext, key string, config *types.DomainConfig) {
 		Service:            config.Service,
 	}
 
-	ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID] = ResourcesUsedByVM{CPUSet: make(map[int]bool)}
-	// Not to get races with the other threads, that try to assign the CPUs at the moment, we have to lock here
-	// Will release after the corresponding control files are created and the arguments are passed to containerd
-	ctx.vmResourcesLock.Lock()
-	defer ctx.vmResourcesLock.Unlock()
 	err := assignCPUs(ctx, config)
 	if err != nil {
-		status.PendingAdd = false
-		status.SetErrorNow(err.Error())
+		log.Warnf("failed to assign CPUs for %s", config.DisplayName)
+		errDescription := types.ErrorDescription{Error: err.Error()}
+		status.SetErrorDescription(errDescription)
 		publishDomainStatus(ctx, &status)
 		return
 	}
@@ -1559,6 +1486,16 @@ func doActivate(ctx *domainContext, config types.DomainConfig,
 		publishDomainStatus(ctx, status)
 		time.Sleep(5 * time.Second)
 	}
+	if err := setCgroupCpuset(&config); err != nil {
+		log.Errorf("Failed to set CPUs for %s: %s", config.DisplayName, err)
+		errDescription := types.ErrorDescription{Error: err.Error()}
+		status.SetErrorDescription(errDescription)
+		publishDomainStatus(ctx, status)
+	}
+	if config.CPUsPinned {
+		triggerCPUNotification()
+	}
+
 	status.BootFailed = false
 	doActivateTail(ctx, status, domainID)
 }
@@ -1566,7 +1503,7 @@ func doActivate(ctx *domainContext, config types.DomainConfig,
 func doActivateTail(ctx *domainContext, status *types.DomainStatus,
 	domainID int) {
 
-	log.Functionf("created domainID %d for %s", domainID, status.DomainName)
+	log.Functionf("created domainID %d for %s", domainID, status.DisplayName)
 	status.DomainId = domainID
 	status.BootTime = time.Now()
 	log.Functionf("Set domainId %d bootTime %s for %s",
@@ -1888,6 +1825,12 @@ func doInactivate(ctx *domainContext, status *types.DomainStatus, impatient bool
 			log.Errorln("unmountContainers failed after retry with force flag")
 		}
 	}
+	if status.VmConfig.CPUsPinned {
+		if err := ctx.cpuAllocator.Free(status.UUIDandVersion.UUID); err != nil {
+			log.Warnf("Failed to free for %s: %s", status.DisplayName, err)
+		}
+		triggerCPUNotification()
+	}
 	releaseAdapters(ctx, status.IoAdapterList, status.UUIDandVersion.UUID,
 		status)
 	status.IoAdapterList = nil
@@ -2190,11 +2133,12 @@ func handleModify(ctx *domainContext, key string,
 			publishDomainStatus(ctx, status)
 			return
 		}
-		// Before the restart, restore the cpumask from the stored data
-		for cpu, used := range ctx.resourcesUsedByVMs[config.UUIDandVersion.UUID].CPUSet {
-			if used {
-				addToMask(cpu, &config.VmConfig.CPUs)
-			}
+		if err := assignCPUs(ctx, config); err != nil {
+			log.Errorf("Failed to assign CPUs for %s: %s", config.DisplayName, err)
+			status.PendingModify = false
+			status.SetErrorNow(err.Error())
+			publishDomainStatus(ctx, status)
+			return
 		}
 		log.Functionf("CPUs for a starting %s: %s", config.DisplayName, config.VmConfig.CPUs)
 		updateStatusFromConfig(status, *config)
@@ -2376,46 +2320,8 @@ func handleDelete(ctx *domainContext, key string, status *types.DomainStatus) {
 	// No point in publishing metrics any more
 	ctx.pubDomainMetric.Unpublish(status.Key())
 
-	if status.CPUsPinned {
-		ctx.vmResourcesLock.Lock()
-		freePinnedCPUs(ctx, status)
-		addCpusToNonPinnedVMs(ctx)
-		ctx.vmResourcesLock.Unlock()
-	}
-
 	log.Functionf("handleDelete(%v) DONE for %s",
 		status.UUIDandVersion, status.DisplayName)
-}
-
-func addCpusToNonPinnedVMs(ctx *domainContext) {
-	sharedCpumaskString := constructNonPinnedCpumaskString(ctx)
-	for vmUUID, vmResources := range ctx.resourcesUsedByVMs {
-		status := lookupDomainStatusByUUID(ctx, vmUUID)
-		if status == nil {
-			continue
-		}
-		if !status.CPUsPinned {
-			for cpu, pinned := range ctx.hostCpusPinned {
-				if !pinned {
-					vmResources.CPUSet[cpu] = true
-				}
-			}
-			err := setCgroupCpuset(ctx, vmUUID, sharedCpumaskString)
-			if err != nil {
-				log.Warnf("Failed to add CPUs to the CPU set of %s: %s", status.DisplayName, err)
-			}
-		}
-	}
-
-}
-
-func freePinnedCPUs(ctx *domainContext, status *types.DomainStatus) {
-	for cpu, used := range ctx.resourcesUsedByVMs[status.UUIDandVersion.UUID].CPUSet {
-		if used {
-			ctx.resourcesUsedByVMs[status.UUIDandVersion.UUID].CPUSet[cpu] = false
-			ctx.hostCpusPinned[cpu] = false
-		}
-	}
 }
 
 // DomainCreate is a wrapper for domain creation
