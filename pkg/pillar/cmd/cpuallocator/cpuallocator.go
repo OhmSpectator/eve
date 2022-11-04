@@ -25,7 +25,7 @@ func (cpus *cpusList) contains(cpuToCheck int) bool {
 // CPUAllocator stores information about the CPUs available in the system
 // and provides interface to allocate and free them, per UUID.
 type CPUAllocator struct {
-	sync.Mutex                               // lock the access to the allocator
+	sync.RWMutex                             // lock the access to the allocator
 	CPUsUsedByUUIDs   map[uuid.UUID]cpusList // per UUID list of allocated CPUs
 	totalCPUs         int                    // total amount of CPUs in the system
 	numReservedForEVE int                    // amount of the CPUs reserved for the EVE services
@@ -107,8 +107,8 @@ func (cpuAllocator *CPUAllocator) getFree(numCPUsRequested int) ([]int, error) {
 
 // GetAllFree returns all free CPUs (except the reserved ones)
 func (cpuAllocator *CPUAllocator) GetAllFree() []int {
-	cpuAllocator.Lock()
-	defer cpuAllocator.Unlock()
+	cpuAllocator.RLock()
+	defer cpuAllocator.RUnlock()
 	result := make([]int, 0, cpuAllocator.totalCPUs)
 	for cpu := 0; cpu < cpuAllocator.totalCPUs; cpu++ {
 		if !cpuAllocator.usedByAnyUUID(cpu) {
