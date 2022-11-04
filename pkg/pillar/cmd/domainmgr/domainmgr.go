@@ -181,8 +181,13 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	if err != nil {
 		log.Fatal(err)
 	}
-	// TODO: Read the numReserved value from the kernel arguments
-	if domainCtx.cpuAllocator, err = cpuallocator.Init(int(resources.Ncpus), 2); err != nil {
+
+	cpusReserved, err := getReservedCPUsNum()
+	if err != nil {
+		log.Warnf("Failed to get reserved CPU number, use 1 by default: %s", err)
+	}
+
+	if domainCtx.cpuAllocator, err = cpuallocator.Init(int(resources.Ncpus), cpusReserved); err != nil {
 		log.Fatal(err)
 	}
 
@@ -643,6 +648,28 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 		}
 		ps.StillRunning(agentName, warningTime, errorTime)
 	}
+}
+
+func getReservedCPUsNum() (int, error) {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return 1, err
+	}
+	bootArgs := strings.Fields(string(data))
+	for _, arg := range bootArgs {
+		if strings.HasPrefix(arg, "eve_max_vcpus") {
+			argSplitted := strings.Split(arg, "=")
+			if len(argSplitted) < 2 {
+				return 1, errors.New("kernel arg 'eve_max_vcpus' is malformed")
+			}
+			cpusReserved, err := strconv.Atoi(argSplitted[1])
+			if err != nil {
+				return 1, errors.New("value of kernel arg 'eve_max_vcpus' is malformed")
+			}
+			return cpusReserved, nil
+		}
+	}
+	return 1, errors.New("kernel arg 'eve_max_vcpus' not found")
 }
 
 func publishProcessesHandler(domainCtx *domainContext) {
