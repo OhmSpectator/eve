@@ -173,7 +173,6 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	domainCtx.cpuPinningSupported = caps.CPUPinning
 
 	resources, err := hyper.GetHostCPUMem()

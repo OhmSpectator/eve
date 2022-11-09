@@ -189,13 +189,15 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	_, enabledHVs := hypervisor.GetAvailableHypervisors()
 	hyper, err := hypervisor.GetHypervisor(enabledHVs[0])
 	if err != nil {
-		log.Fatal(err)
+		log.Errorf("@ohm: failed to get hypervisor: %s", err)
+		ctx.useVHost = true
+	} else {
+		caps, err := hyper.GetCapabilities()
+		if err != nil {
+			log.Fatal(err)
+		}
+		ctx.useVHost = caps.UseVHost
 	}
-	caps, err := hyper.GetCapabilities()
-	if err != nil {
-		log.Fatal(err)
-	}
-	ctx.useVHost = caps.UseVHost
 	log.Functionf("will use vhost: %t", ctx.useVHost)
 
 	if ctx.persistType == types.PersistZFS {
