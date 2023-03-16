@@ -225,6 +225,9 @@ type AppInstanceStatus struct {
 	ErrorAndTimeWithSource
 	// Effective time, when the application should start
 	StartTime time.Time
+
+	// SnapshotOnUpdate indicates whether a snapshot should be taken during the app instance update.
+	SnapshotOnUpdate bool
 }
 
 // AppCount is uint8 and it should be sufficient for the number of apps we can support
