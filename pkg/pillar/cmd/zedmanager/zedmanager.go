@@ -573,6 +573,18 @@ func lookupAppInstanceConfig(ctx *zedmanagerContext, key string) *types.AppInsta
 	return &config
 }
 
+func isSnapshotRequestedOnUpdate(config types.AppInstanceConfig) bool {
+	if config.Snapshot == nil {
+		return false
+	}
+	for _, snap := range config.Snapshot.Snapshots {
+		if snap.SnapshotType == types.SnapshotTypeAppUpdate {
+			return true
+		}
+	}
+	return false
+}
+
 func handleCreate(ctxArg interface{}, key string,
 	configArg interface{}) {
 	ctx := ctxArg.(*zedmanagerContext)
@@ -590,6 +602,9 @@ func handleCreate(ctxArg interface{}, key string,
 
 	// Calculate the moment when the application should start, taking into account the configured delay
 	status.StartTime = ctx.delayBaseTime.Add(config.Delay)
+
+	// Check if there is any during-the-update snapshot request for this app
+	status.SnapshotOnUpdate = isSnapshotRequestedOnUpdate(config)
 
 	// Do we have a PurgeCmd counter from before the reboot?
 	// Note that purgeCmdCounter is a sum of the remote and the local purge counter.
@@ -689,6 +704,8 @@ func handleModify(ctxArg interface{}, key string,
 
 	status.StartTime = ctx.delayBaseTime.Add(config.Delay)
 
+	status.SnapshotOnUpdate = isSnapshotRequestedOnUpdate(config)
+
 	effectiveActivate := effectiveActivateCurrentProfile(config, ctx.currentProfile)
 
 	publishAppInstanceStatus(ctx, status)
@@ -704,6 +721,10 @@ func handleModify(ctxArg interface{}, key string,
 	needPurge, needRestart, purgeReason, restartReason := quantifyChanges(config, oldConfig, *status)
 	if needPurge {
 		needRestart = false
+	}
+
+	if needRestart && status.SnapshotOnUpdate {
+		// TODO: handle the snapshot creation here
 	}
 
 	if config.RestartCmd.Counter != oldConfig.RestartCmd.Counter ||
