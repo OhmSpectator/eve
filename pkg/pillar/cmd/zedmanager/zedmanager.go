@@ -574,7 +574,7 @@ func lookupAppInstanceConfig(ctx *zedmanagerContext, key string) *types.AppInsta
 }
 
 func isSnapshotRequestedOnUpdate(config types.AppInstanceConfig) bool {
-	if config.Snapshot == nil {
+	if config.Snapshot.Snapshots == nil {
 		return false
 	}
 	for _, snap := range config.Snapshot.Snapshots {
@@ -605,6 +605,12 @@ func handleCreate(ctxArg interface{}, key string,
 
 	// Check if there is any during-the-update snapshot request for this app
 	status.SnapshotOnUpdate = isSnapshotRequestedOnUpdate(config)
+	// All the snapshots that appear in the first config are considered to be taken
+	if config.Snapshot.Snapshots != nil {
+		for _, snap := range config.Snapshot.Snapshots {
+			status.SnapshotsToBeTaken = append(status.SnapshotsToBeTaken, snap)
+		}
+	}
 
 	// Do we have a PurgeCmd counter from before the reboot?
 	// Note that purgeCmdCounter is a sum of the remote and the local purge counter.
@@ -705,6 +711,7 @@ func handleModify(ctxArg interface{}, key string,
 	status.StartTime = ctx.delayBaseTime.Add(config.Delay)
 
 	status.SnapshotOnUpdate = isSnapshotRequestedOnUpdate(config)
+	status.SnapshotsToBeTaken = append(status.SnapshotsToBeTaken, getNewSnapshotRequests(config, status)...)
 
 	effectiveActivate := effectiveActivateCurrentProfile(config, ctx.currentProfile)
 
@@ -723,8 +730,11 @@ func handleModify(ctxArg interface{}, key string,
 		needRestart = false
 	}
 
+	// A snapshot is deemed necessary whenever the application requires a restart, as this typically
+	// indicates a significant change in the application, such as an upgrade.
 	if needRestart && status.SnapshotOnUpdate {
-		// TODO: handle the snapshot creation here
+		// TODO: handle the SnapshotsToBeTaken list here. Publish the message to the volume manager, so that it can take the snapshots.
+		// TODO: Save the current config here.
 	}
 
 	if config.RestartCmd.Counter != oldConfig.RestartCmd.Counter ||
@@ -793,6 +803,35 @@ func handleModify(ctxArg interface{}, key string,
 	}
 	publishAppInstanceStatus(ctx, status)
 	log.Functionf("handleModify done for %s", config.DisplayName)
+}
+
+// getNewSnapshotRequests returns the list of new snapshot requests
+func getNewSnapshotRequests(config types.AppInstanceConfig, status *types.AppInstanceStatus) []types.SnapshotDesc {
+	var snapRequests []types.SnapshotDesc
+	if config.Snapshot.Snapshots != nil {
+		for _, snap := range config.Snapshot.Snapshots {
+			if isNewSnapshotRequest(snap, status) {
+				snapRequests = append(snapRequests, snap)
+			}
+		}
+	}
+	return snapRequests
+}
+
+// isNewSnapshotRequest checks if the snapshot is already present at least in one of the lists
+// of snapshots to be taken or available snapshots.
+func isNewSnapshotRequest(snap types.SnapshotDesc, status *types.AppInstanceStatus) bool {
+	for _, snapToBeTaken := range status.SnapshotsToBeTaken {
+		if snapToBeTaken.SnapshotID == snap.SnapshotID {
+			return false
+		}
+	}
+	for _, snapAvailable := range status.AvailableSnapshots {
+		if snapAvailable.SnapshotID == snap.SnapshotID {
+			return false
+		}
+	}
+	return true
 }
 
 func handleDelete(ctx *zedmanagerContext, key string,

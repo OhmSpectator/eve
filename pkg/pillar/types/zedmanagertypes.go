@@ -228,6 +228,10 @@ type AppInstanceStatus struct {
 
 	// SnapshotOnUpdate indicates whether a snapshot should be taken during the app instance update.
 	SnapshotOnUpdate bool
+	// AvailableSnapshots contains the list of snapshots available for the app instance.
+	AvailableSnapshots []SnapshotDesc
+	// SnapshotsToBeTaken contains the list of snapshots to be taken for the app instance.
+	SnapshotsToBeTaken []SnapshotDesc
 }
 
 // AppCount is uint8 and it should be sufficient for the number of apps we can support
