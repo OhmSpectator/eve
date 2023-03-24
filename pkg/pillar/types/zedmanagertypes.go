@@ -68,6 +68,13 @@ type SnapshotDesc struct {
 	SnapshotType SnapshotType // Type of the snapshot creation trigger
 }
 
+type SnapshotStatus struct {
+	Snapshot      SnapshotDesc // Description of the snapshot
+	Reported      bool         // True if the snapshot has been reported to the controller
+	TimeTriggered time.Time    // Time when the snapshot was requested
+	TimeCreated   time.Time    // Time when the snapshot was created
+}
+
 // SnapshotConfig configuration of the snapshot handling for the app instance
 type SnapshotConfig struct {
 	ActiveSnapshot string            // UUID of the active snapshot used by the app instance
@@ -229,9 +236,11 @@ type AppInstanceStatus struct {
 	// SnapshotOnUpdate indicates whether a snapshot should be taken during the app instance update.
 	SnapshotOnUpdate bool
 	// AvailableSnapshots contains the list of snapshots available for the app instance.
-	AvailableSnapshots []SnapshotDesc
+	AvailableSnapshots []SnapshotStatus
 	// SnapshotsToBeTaken contains the list of snapshots to be taken for the app instance.
-	SnapshotsToBeTaken []SnapshotDesc
+	SnapshotsToBeTaken []SnapshotStatus
+	// MaxSnapshots indicates the maximum number of snapshots to be kept for the app instance.
+	MaxSnapshots uint32
 }
 
 // AppCount is uint8 and it should be sufficient for the number of apps we can support
