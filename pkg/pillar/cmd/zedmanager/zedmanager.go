@@ -10,6 +10,7 @@ package zedmanager
 import (
 	"flag"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -605,10 +606,22 @@ func handleCreate(ctxArg interface{}, key string,
 
 	// Check if there is any during-the-update snapshot request for this app
 	status.SnapshotOnUpdate = isSnapshotRequestedOnUpdate(config)
+	status.MaxSnapshots = config.Snapshot.MaxSnapshots
 	// All the snapshots that appear in the first config are considered to be taken
 	if config.Snapshot.Snapshots != nil {
-		for _, snap := range config.Snapshot.Snapshots {
-			status.SnapshotsToBeTaken = append(status.SnapshotsToBeTaken, snap)
+		toBeTaken := config.Snapshot.Snapshots
+		// If the number of snapshots requested is more than the maxSnapshots, we take only the first maxSnapshots
+		if config.Snapshot.MaxSnapshots < uint32(len(config.Snapshot.Snapshots)) {
+			log.Warnf("handleCreate(%v) for %s found %d snapshots requests, but maxSnapshots is %d",
+				config.UUIDandVersion, config.DisplayName, len(config.Snapshot.Snapshots), config.Snapshot.MaxSnapshots)
+			errDescription := types.ErrorDescription{}
+			errDescription.Error = fmt.Sprintf("Found %d snapshots requests, but maxSnapshots is %d", len(config.Snapshot.Snapshots), config.Snapshot.MaxSnapshots)
+			errDescription.ErrorTime = time.Now()
+			errDescription.ErrorSeverity = types.ErrorSeverityWarning
+			toBeTaken = config.Snapshot.Snapshots[:config.Snapshot.MaxSnapshots]
+		}
+		for _, snap := range toBeTaken {
+			status.SnapshotsToBeTaken = append(status.SnapshotsToBeTaken, types.SnapshotStatus{Snapshot: snap, Reported: false})
 		}
 	}
 
@@ -711,7 +724,20 @@ func handleModify(ctxArg interface{}, key string,
 	status.StartTime = ctx.delayBaseTime.Add(config.Delay)
 
 	status.SnapshotOnUpdate = isSnapshotRequestedOnUpdate(config)
-	status.SnapshotsToBeTaken = append(status.SnapshotsToBeTaken, getNewSnapshotRequests(config, status)...)
+	// TODO: should we check if the max number of snapshots is changed?
+	status.MaxSnapshots = config.Snapshot.MaxSnapshots
+	snapshotsToBeDeleted := getSnapshotsToBeDeleted(config, status)
+	snapshotsToBeTaken := getNewSnapshotRequests(config, status)
+	// Check if we have reached the max number of snapshots and delete the oldest ones
+	snapshotsToBeDeleted, snapshotsToBeTaken = fitToSnapshotsLimits(status, snapshotsToBeDeleted, snapshotsToBeTaken)
+	for _, snapshot := range snapshotsToBeTaken {
+		status.SnapshotsToBeTaken = append(status.SnapshotsToBeTaken, types.SnapshotStatus{Snapshot: snapshot, Reported: false, TimeCreated: time.Now()})
+	}
+	if len(snapshotsToBeDeleted) > 0 {
+		log.Functionf("handleModify(%v) for %s: Snapshot to be deleted: %v",
+			config.UUIDandVersion, config.DisplayName, snapshotsToBeDeleted)
+		// TODO: handle the SnapshotsToBeDeleted list here. Publish the message to the volume manager
+	}
 
 	effectiveActivate := effectiveActivateCurrentProfile(config, ctx.currentProfile)
 
@@ -734,7 +760,12 @@ func handleModify(ctxArg interface{}, key string,
 	// indicates a significant change in the application, such as an upgrade.
 	if needRestart && status.SnapshotOnUpdate {
 		// TODO: handle the SnapshotsToBeTaken list here. Publish the message to the volume manager, so that it can take the snapshots.
-		// TODO: Save the current config here.
+		for _, snapshot := range status.SnapshotsToBeTaken {
+			if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate {
+				snapshot.TimeTriggered = time.Now()
+			}
+		}
+		// TODO: Save the current config here!
 	}
 
 	if config.RestartCmd.Counter != oldConfig.RestartCmd.Counter ||
@@ -793,6 +824,15 @@ func handleModify(ctxArg interface{}, key string,
 		return
 	}
 
+	if config.Snapshot.RollbackCmd.Counter != oldConfig.Snapshot.RollbackCmd.Counter {
+		log.Functionf("handleModify(%v) for %s rollbackcmd from %d to %d, snap ID: %s",
+			config.UUIDandVersion, config.DisplayName,
+			oldConfig.Snapshot.RollbackCmd.Counter,
+			config.Snapshot.RollbackCmd.Counter,
+			config.Snapshot.ActiveSnapshot)
+		// TODO: Publish the message to the volume manager, so that it can rollback to the proper snapshot.
+	}
+
 	status.UUIDandVersion = config.UUIDandVersion
 	publishAppInstanceStatus(ctx, status)
 
@@ -805,6 +845,111 @@ func handleModify(ctxArg interface{}, key string,
 	log.Functionf("handleModify done for %s", config.DisplayName)
 }
 
+func removeNUnpublishedSnapshotRequests(snapshots []types.SnapshotStatus, n uint32) ([]types.SnapshotStatus, uint32) {
+	var count uint32 = 0
+	for i := 0; i < len(snapshots) && count < n; i++ {
+		if snapshots[i].TimeTriggered.IsZero() {
+			// Move the last element to the current position and truncate the slice
+			snapshots[i] = snapshots[len(snapshots)-1]
+			snapshots = snapshots[:len(snapshots)-1]
+			i-- // Decrement i to recheck the current index after the swap
+			count++
+		}
+	}
+	return snapshots, count
+}
+
+// fitToSnapshotsLimits checks if the number of snapshots is more than the limit. If so, it flags the oldest snapshots for deletion.
+// If the number of snapshots is still more than the limit, it trims the list of snapshots to be taken to fit the limit.
+func fitToSnapshotsLimits(status *types.AppInstanceStatus, toBeDeleted []types.SnapshotDesc, newRequested []types.SnapshotDesc) ([]types.SnapshotDesc, []types.SnapshotDesc) {
+	// If the number of snapshots is less than the limit, then we do not need to delete any snapshots.
+	totalSnapshotsRequestedNum := uint32(len(status.AvailableSnapshots) + len(status.SnapshotsToBeTaken) + len(newRequested) - len(toBeDeleted))
+	if totalSnapshotsRequestedNum <= status.MaxSnapshots {
+		log.Functionf("fitToSnapshotsLimits: No need to delete any snapshots for %s", status.DisplayName)
+		return toBeDeleted, newRequested
+	}
+	// If the number of snapshots is more than the limit, then we need to delete the oldest snapshots.
+	snapshotsToBeDeletedNum := totalSnapshotsRequestedNum - status.MaxSnapshots
+	sortByTimeCreated(status.AvailableSnapshots)
+	for _, snap := range status.AvailableSnapshots {
+		if snapshotsToBeDeletedNum == 0 {
+			break
+		}
+		toBeDeleted = append(toBeDeleted, snap.Snapshot)
+		snapshotsToBeDeletedNum--
+	}
+	// If we still have more snapshots to be deleted, then we need to delete the snapshots from the newRequested list.
+	if snapshotsToBeDeletedNum != 0 {
+		// Too many snapshots newRequested
+		log.Warnf("fitToSnapshotsLimits: Could not delete %d snapshots for %s", snapshotsToBeDeletedNum, status.DisplayName)
+		// Remove the snapshots from the newRequested list
+		if len(newRequested) < int(snapshotsToBeDeletedNum) {
+			log.Errorf("fitToSnapshotsLimits: Unexpected error. The number of snapshots to be deleted is more than the number of newRequested snapshots.")
+			status.SetError("Unexpected error. The number of snapshots to be deleted is more than the number of newRequested snapshots.", time.Now())
+		}
+		// Should we check, if the removed snaps are already taken into action?
+		newRequested = newRequested[:len(newRequested)-int(snapshotsToBeDeletedNum)]
+		// Report as a warning
+		errDesc := types.ErrorDescription{}
+		errDesc.Error = fmt.Sprintf("Too many snapshots requested. Max allowed: %d", status.MaxSnapshots)
+		errDesc.ErrorTime = time.Now()
+		errDesc.ErrorSeverity = types.ErrorSeverityWarning
+		status.ErrorDescription = errDesc
+	}
+	// If we still have more snapshots to be deleted, then we need to delete the unpublished snapshots from the SnapshotsToBeTaken list.
+	if snapshotsToBeDeletedNum != 0 {
+		var removed uint32
+		status.SnapshotsToBeTaken, removed = removeNUnpublishedSnapshotRequests(status.SnapshotsToBeTaken, snapshotsToBeDeletedNum)
+		if removed != snapshotsToBeDeletedNum {
+			log.Errorf("fitToSnapshotsLimits: Unexpected error. The number of snapshots to be deleted is more than the number of unpublished snapshots.")
+			status.SetError("Unexpected error. The number of snapshots to be deleted is more than the number of unpublished snapshots.", time.Now())
+		}
+		log.Errorf("fitToSnapshotsLimits: Could not delete %d snapshots for %s", snapshotsToBeDeletedNum, status.DisplayName)
+		status.SetError(fmt.Sprintf("Could not delete %d snapshots for %s", snapshotsToBeDeletedNum, status.DisplayName), time.Now())
+	}
+	return toBeDeleted, newRequested
+}
+
+func sortByTimeCreated(snapshots []types.SnapshotStatus) {
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].TimeCreated.Before(snapshots[j].TimeCreated)
+	})
+}
+
+// getSnapshotsToBeDeleted returns the list of snapshots which are to be deleted.
+func getSnapshotsToBeDeleted(config types.AppInstanceConfig, status *types.AppInstanceStatus) []types.SnapshotDesc {
+	var snapsToBeDeleted []types.SnapshotDesc
+	// If the config has a list of snapshots, then we need to delete the ones which are not present in the config.
+	if config.Snapshot.Snapshots != nil {
+		for _, snap := range status.AvailableSnapshots {
+			if !isSnapshotPresent(snap.Snapshot, config.Snapshot.Snapshots) && snap.Reported {
+				snapsToBeDeleted = append(snapsToBeDeleted, snap.Snapshot)
+			}
+		}
+		// If the config does not have a list of snapshots, then we need to delete all the reported snapshots.
+	} else {
+		for _, snap := range status.AvailableSnapshots {
+			if snap.Reported {
+				snapsToBeDeleted = append(snapsToBeDeleted, snap.Snapshot)
+			}
+		}
+	}
+	return snapsToBeDeleted
+}
+
+// isSnapshotPresent checks if the snapshot is already present in the list of snapshots
+func isSnapshotPresent(snap types.SnapshotDesc, snaps []types.SnapshotDesc) bool {
+	if snaps == nil {
+		return false
+	}
+	for _, snapDesc := range snaps {
+		if snapDesc.SnapshotID == snap.SnapshotID {
+			return true
+		}
+	}
+	return false
+}
+
 // getNewSnapshotRequests returns the list of new snapshot requests
 func getNewSnapshotRequests(config types.AppInstanceConfig, status *types.AppInstanceStatus) []types.SnapshotDesc {
 	var snapRequests []types.SnapshotDesc
@@ -813,6 +958,7 @@ func getNewSnapshotRequests(config types.AppInstanceConfig, status *types.AppIns
 			if isNewSnapshotRequest(snap, status) {
 				snapRequests = append(snapRequests, snap)
 			}
+			//TODO: create a list of snapshots to be deleted if the total number of snapshots is more than the max allowed.
 		}
 	}
 	return snapRequests
@@ -822,12 +968,12 @@ func getNewSnapshotRequests(config types.AppInstanceConfig, status *types.AppIns
 // of snapshots to be taken or available snapshots.
 func isNewSnapshotRequest(snap types.SnapshotDesc, status *types.AppInstanceStatus) bool {
 	for _, snapToBeTaken := range status.SnapshotsToBeTaken {
-		if snapToBeTaken.SnapshotID == snap.SnapshotID {
+		if snapToBeTaken.Snapshot.SnapshotID == snap.SnapshotID {
 			return false
 		}
 	}
 	for _, snapAvailable := range status.AvailableSnapshots {
-		if snapAvailable.SnapshotID == snap.SnapshotID {
+		if snapAvailable.Snapshot.SnapshotID == snap.SnapshotID {
 			return false
 		}
 	}
