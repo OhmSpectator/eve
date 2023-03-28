@@ -239,6 +239,53 @@ func (status VolumeStatus) LogKey() string {
 	return string(base.VolumeStatusLogType) + "-" + status.Key()
 }
 
+type VolumesSnapshotAction uint8
+
+const (
+	VolumesSnapshotUnspecifiedAction VolumesSnapshotAction = iota
+	VolumesSnapshotCreate
+	VolumesSnapshotRollback
+	VolumesSnapshotDelete
+)
+
+func (action VolumesSnapshotAction) String() string {
+	switch action {
+	case VolumesSnapshotCreate:
+		return "Create"
+	case VolumesSnapshotRollback:
+		return "Rollback"
+	case VolumesSnapshotDelete:
+		return "Delete"
+	default:
+		return "Unspecified"
+	}
+}
+
+type VolumesSnapshotConfig struct {
+	// SnapshotID is the ID of the snapshot
+	SnapshotID string
+	// ConfigUUIDAndVersion is the UUIDandVersion of the config, will be reported to the controller during rollback
+	ConfigUUIDAndVersion UUIDandVersion
+	// Action is the action to perform on the snapshot
+	Action VolumesSnapshotAction
+	// VolumeIDs is a list of volumes to snapshot
+	VolumeIDs []uuid.UUID
+}
+
+func (config VolumesSnapshotConfig) Key() string {
+	return config.SnapshotID
+}
+
+type VolumesSnapshotStatus struct {
+	// TODO: mock at the moment, will be replaced with the real message
+	SnapshotID           string
+	ConfigUUIDAndVersion UUIDandVersion
+}
+
+func (status VolumesSnapshotStatus) Key() string {
+	return status.SnapshotID
+}
+
 // VolumeRefConfig : Reference to a Volume specified separately in the API
 // If a volume is purged (re-created from scratch) it will either have a new
 // UUID or a new generationCount

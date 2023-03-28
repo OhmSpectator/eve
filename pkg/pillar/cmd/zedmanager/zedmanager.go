@@ -39,25 +39,26 @@ var Version = "No version specified"
 // State used by handlers
 type zedmanagerContext struct {
 	agentbase.AgentBase
-	subAppInstanceConfig  pubsub.Subscription
-	subAppInstanceStatus  pubsub.Subscription // zedmanager both publishes and subscribes to AppInstanceStatus
-	pubAppInstanceStatus  pubsub.Publication
-	pubAppInstanceSummary pubsub.Publication
-	pubVolumeRefConfig    pubsub.Publication
-	subVolumeRefStatus    pubsub.Subscription
-	pubAppNetworkConfig   pubsub.Publication
-	subAppNetworkStatus   pubsub.Subscription
-	pubDomainConfig       pubsub.Publication
-	subDomainStatus       pubsub.Subscription
-	subGlobalConfig       pubsub.Subscription
-	subHostMemory         pubsub.Subscription
-	subZedAgentStatus     pubsub.Subscription
-	globalConfig          *types.ConfigItemValueMap
-	appToPurgeCounterMap  objtonum.Map
-	GCInitialized         bool
-	checkFreedResources   bool // Set when app instance has !Activated
-	currentProfile        string
-	currentTotalMemoryMB  uint64
+	subAppInstanceConfig     pubsub.Subscription
+	subAppInstanceStatus     pubsub.Subscription // zedmanager both publishes and subscribes to AppInstanceStatus
+	pubAppInstanceStatus     pubsub.Publication
+	pubAppInstanceSummary    pubsub.Publication
+	pubVolumeRefConfig       pubsub.Publication
+	subVolumeRefStatus       pubsub.Subscription
+	pubAppNetworkConfig      pubsub.Publication
+	subAppNetworkStatus      pubsub.Subscription
+	pubDomainConfig          pubsub.Publication
+	subDomainStatus          pubsub.Subscription
+	subGlobalConfig          pubsub.Subscription
+	subHostMemory            pubsub.Subscription
+	subZedAgentStatus        pubsub.Subscription
+	pubVolumesSnapshotConfig pubsub.Publication
+	globalConfig             *types.ConfigItemValueMap
+	appToPurgeCounterMap     objtonum.Map
+	GCInitialized            bool
+	checkFreedResources      bool // Set when app instance has !Activated
+	currentProfile           string
+	currentTotalMemoryMB     uint64
 	// The time from which the configured applications delays should be counted
 	delayBaseTime time.Time
 	// cli options
@@ -101,6 +102,17 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 		log.Fatal(err)
 	}
 	log.Functionf("processed onboarded")
+
+	// Create publish for SnapshotConfig
+	pubSnapshotConfig, err := ps.NewPublication(pubsub.PublicationOptions{
+		AgentName: agentName,
+		TopicType: types.VolumesSnapshotConfig{},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx.pubVolumesSnapshotConfig = pubSnapshotConfig
+	pubSnapshotConfig.ClearRestarted()
 
 	// Create publish before subscribing and activating subscriptions
 	pubAppInstanceStatus, err := ps.NewPublication(pubsub.PublicationOptions{
@@ -736,7 +748,14 @@ func handleModify(ctxArg interface{}, key string,
 	if len(snapshotsToBeDeleted) > 0 {
 		log.Functionf("handleModify(%v) for %s: Snapshot to be deleted: %v",
 			config.UUIDandVersion, config.DisplayName, snapshotsToBeDeleted)
-		// TODO: handle the SnapshotsToBeDeleted list here. Publish the message to the volume manager
+		// Trigger Snapshot Deletion
+		for _, snapshot := range snapshotsToBeDeleted {
+			volumesSnapshotConfig := types.VolumesSnapshotConfig{
+				SnapshotID: snapshot.SnapshotID,
+				Action:     types.VolumesSnapshotDelete,
+			}
+			publishVolumesSnapshotConfig(ctx, &volumesSnapshotConfig)
+		}
 	}
 
 	effectiveActivate := effectiveActivateCurrentProfile(config, ctx.currentProfile)
@@ -758,14 +777,24 @@ func handleModify(ctxArg interface{}, key string,
 
 	// A snapshot is deemed necessary whenever the application requires a restart, as this typically
 	// indicates a significant change in the application, such as an upgrade.
-	if needRestart && status.SnapshotOnUpdate {
-		// TODO: handle the SnapshotsToBeTaken list here. Publish the message to the volume manager, so that it can take the snapshots.
+	if status.SnapshotOnUpdate && (needRestart || needPurge) {
 		for _, snapshot := range status.SnapshotsToBeTaken {
 			if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate {
 				snapshot.TimeTriggered = time.Now()
+				// Trigger Snapshot Creation
+				log.Errorf("@ohm: handleModify(%v) for %s: Triggering snapshot creation", config.UUIDandVersion, config.DisplayName)
+				volumesSnapshotConfig := types.VolumesSnapshotConfig{
+					SnapshotID: snapshot.Snapshot.SnapshotID,
+					// Save the config UUID and version in the snapshot config
+					ConfigUUIDAndVersion: config.UUIDandVersion,
+					Action:               types.VolumesSnapshotCreate,
+				}
+				for _, volumeStatus := range status.VolumeRefStatusList {
+					volumesSnapshotConfig.VolumeIDs = append(volumesSnapshotConfig.VolumeIDs, volumeStatus.VolumeID)
+				}
+				publishVolumesSnapshotConfig(ctx, &volumesSnapshotConfig)
 			}
 		}
-		// TODO: Save the current config here!
 	}
 
 	if config.RestartCmd.Counter != oldConfig.RestartCmd.Counter ||
@@ -825,11 +854,14 @@ func handleModify(ctxArg interface{}, key string,
 	}
 
 	if config.Snapshot.RollbackCmd.Counter != oldConfig.Snapshot.RollbackCmd.Counter {
-		log.Functionf("handleModify(%v) for %s rollbackcmd from %d to %d, snap ID: %s",
-			config.UUIDandVersion, config.DisplayName,
-			oldConfig.Snapshot.RollbackCmd.Counter,
-			config.Snapshot.RollbackCmd.Counter,
-			config.Snapshot.ActiveSnapshot)
+		log.Functionf("handleModify(%v) for %s: Snapshot to be rolled back: %v",
+			config.UUIDandVersion, config.DisplayName, config.Snapshot.ActiveSnapshot)
+		// Trigger Snapshot Rollback
+		volumesSnapshotConfig := types.VolumesSnapshotConfig{
+			SnapshotID: config.Snapshot.ActiveSnapshot,
+			Action:     types.VolumesSnapshotRollback,
+		}
+		publishVolumesSnapshotConfig(ctx, &volumesSnapshotConfig)
 		// TODO: Publish the message to the volume manager, so that it can rollback to the proper snapshot.
 	}
 
@@ -843,6 +875,13 @@ func handleModify(ctxArg interface{}, key string,
 	}
 	publishAppInstanceStatus(ctx, status)
 	log.Functionf("handleModify done for %s", config.DisplayName)
+}
+
+func publishVolumesSnapshotConfig(ctx *zedmanagerContext, t *types.VolumesSnapshotConfig) {
+	key := t.Key()
+	log.Tracef("publishVolumesSnapshotConfig(%s)", key)
+	pub := ctx.pubVolumesSnapshotConfig
+	_ = pub.Publish(key, *t)
 }
 
 func removeNUnpublishedSnapshotRequests(snapshots []types.SnapshotStatus, n uint32) ([]types.SnapshotStatus, uint32) {
@@ -958,7 +997,6 @@ func getNewSnapshotRequests(config types.AppInstanceConfig, status *types.AppIns
 			if isNewSnapshotRequest(snap, status) {
 				snapRequests = append(snapRequests, snap)
 			}
-			//TODO: create a list of snapshots to be deleted if the total number of snapshots is more than the max allowed.
 		}
 	}
 	return snapRequests
