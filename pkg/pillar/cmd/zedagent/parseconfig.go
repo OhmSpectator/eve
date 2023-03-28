@@ -40,6 +40,8 @@ const (
 	maxVlanID = 4094
 )
 
+var testSnapshot = uuid.Nil
+
 func parseConfig(getconfigCtx *getconfigContext, config *zconfig.EdgeDevConfig,
 	source configSource) configProcessingRetval {
 
@@ -541,6 +543,19 @@ func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 		appInstance.Service = cfgApp.Service
 		appInstance.CloudInitVersion = cfgApp.CloudInitVersion
 		appInstance.FixedResources.CPUsPinned = cfgApp.Fixedresources.PinCpu
+
+		// Mock for the test
+		if testSnapshot == uuid.Nil {
+			testSnapshot, _ = uuid.NewV4()
+		}
+		cfgApp.Snapshot = &zconfig.SnapshotConfig{
+			MaxSnapshots: 1,
+			Snapshots:    make([]*zconfig.SnapshotDesc, 1),
+		}
+		cfgApp.Snapshot.Snapshots[0] = &zconfig.SnapshotDesc{
+			Id:   testSnapshot.String(),
+			Type: zconfig.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE,
+		}
 
 		// Parse the snapshot related fields
 		if cfgApp.Snapshot != nil {

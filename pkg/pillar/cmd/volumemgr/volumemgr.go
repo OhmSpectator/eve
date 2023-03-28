@@ -23,6 +23,7 @@ import (
 	"github.com/lf-edge/eve/pkg/pillar/utils"
 	"github.com/lf-edge/eve/pkg/pillar/vault"
 	"github.com/lf-edge/eve/pkg/pillar/worker"
+	uuid "github.com/satori/go.uuid"
 	"github.com/sirupsen/logrus"
 )
 
@@ -56,24 +57,26 @@ type volumemgrContext struct {
 	pubVerifyImageConfig pubsub.Publication
 	subVerifyImageStatus pubsub.Subscription
 
-	subResolveStatus        pubsub.Subscription
-	pubResolveConfig        pubsub.Publication
-	subContentTreeConfig    pubsub.Subscription
-	pubContentTreeStatus    pubsub.Publication
-	subVolumeConfig         pubsub.Subscription
-	pubVolumeStatus         pubsub.Publication
-	subVolumeRefConfig      pubsub.Subscription
-	pubVolumeRefStatus      pubsub.Publication
-	pubContentTreeToHash    pubsub.Publication
-	pubBlobStatus           pubsub.Publication
-	pubDiskMetric           pubsub.Publication
-	pubAppDiskMetric        pubsub.Publication
-	subDatastoreConfig      pubsub.Subscription
-	subZVolStatus           pubsub.Subscription
-	pubVolumeCreatePending  pubsub.Publication
-	diskMetricsTickerHandle interface{}
-	gc                      *time.Ticker
-	deferDelete             *time.Ticker
+	subResolveStatus         pubsub.Subscription
+	pubResolveConfig         pubsub.Publication
+	subContentTreeConfig     pubsub.Subscription
+	pubContentTreeStatus     pubsub.Publication
+	subVolumeConfig          pubsub.Subscription
+	pubVolumeStatus          pubsub.Publication
+	subVolumeRefConfig       pubsub.Subscription
+	pubVolumeRefStatus       pubsub.Publication
+	pubContentTreeToHash     pubsub.Publication
+	pubBlobStatus            pubsub.Publication
+	pubDiskMetric            pubsub.Publication
+	pubAppDiskMetric         pubsub.Publication
+	subDatastoreConfig       pubsub.Subscription
+	subZVolStatus            pubsub.Subscription
+	pubVolumeCreatePending   pubsub.Publication
+	subVolumesSnapshotConfig pubsub.Subscription
+	pubVolumesSnapshotStatus pubsub.Publication
+	diskMetricsTickerHandle  interface{}
+	gc                       *time.Ticker
+	deferDelete              *time.Ticker
 
 	worker worker.Worker // For background work
 
@@ -99,6 +102,18 @@ type volumemgrContext struct {
 
 	// cli options
 	versionPtr *bool
+}
+
+func (ctxPtr *volumemgrContext) lookupVolumeStatusByUUID(id uuid.UUID) *types.VolumeStatus {
+	sub := ctxPtr.pubVolumeStatus
+	items := sub.GetAll()
+	for _, st := range items {
+		status := st.(types.VolumeStatus)
+		if status.VolumeID == id {
+			return &status
+		}
+	}
+	return nil
 }
 
 func (ctxPtr *volumemgrContext) GetCasClient() cas.CAS {
@@ -502,6 +517,33 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	ctx.subZVolStatus = subZVolStatus
 	subZVolStatus.Activate()
 
+	subVolumesSnapshotConfig, err := ps.NewSubscription(pubsub.SubscriptionOptions{
+		CreateHandler: handleVolumesSnapshotConfigCreate,
+		ModifyHandler: handleVolumesSnapshotConfigModify,
+		WarningTime:   warningTime,
+		ErrorTime:     errorTime,
+		AgentName:     "zedmanager",
+		TopicImpl:     types.VolumesSnapshotConfig{},
+		Ctx:           &ctx,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx.subVolumesSnapshotConfig = subVolumesSnapshotConfig
+	subVolumesSnapshotConfig.Activate()
+
+	pubVolumesSnapshotStatus, err := ps.NewPublication(
+		pubsub.PublicationOptions{
+			AgentName:  agentName,
+			TopicType:  types.VolumesSnapshotStatus{},
+			Persistent: true,
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx.pubVolumesSnapshotStatus = pubVolumesSnapshotStatus
+
 	if ctx.casClient, err = cas.NewCAS(casClientType); err != nil {
 		err = fmt.Errorf("Run: exception while initializing CAS client: %s", err.Error())
 		log.Fatal(err)
@@ -607,6 +649,9 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 
 		case change := <-ctx.subZVolStatus.MsgChan():
 			ctx.subZVolStatus.ProcessChange(change)
+
+		case change := <-ctx.subVolumesSnapshotConfig.MsgChan():
+			ctx.subVolumesSnapshotConfig.ProcessChange(change)
 
 		case <-ctx.gc.C:
 			start := time.Now()
@@ -798,4 +843,64 @@ func handleCapabilitiesImpl(ctxArg interface{}, _ string,
 // GetCapabilities returns stored capabilities
 func (ctxPtr *volumemgrContext) GetCapabilities() *types.Capabilities {
 	return ctxPtr.capabilities
+}
+
+func handleVolumesSnapshotConfigCreate(ctxArg interface{}, key string,
+	statusArg interface{}) {
+	ctx := ctxArg.(*volumemgrContext)
+	status := statusArg.(types.VolumesSnapshotConfig)
+	handleVolumesSnapshotConfigImpl(ctx, key, status)
+}
+
+func handleVolumesSnapshotConfigModify(ctxArg interface{}, key string,
+	statusArg, _ interface{}) {
+	ctx := ctxArg.(*volumemgrContext)
+	status := statusArg.(types.VolumesSnapshotConfig)
+	handleVolumesSnapshotConfigImpl(ctx, key, status)
+}
+
+func handleVolumesSnapshotConfigImpl(ctx *volumemgrContext, key string, config types.VolumesSnapshotConfig) {
+	log.Functionf("handleVolumesSnapshotConfigImpl(%s) handles %s", key, config.Action)
+	status := lookupVolumesSnapshotStatus(ctx, key)
+	if status == nil {
+		log.Functionf("handleVolumesSnapshotConfigImpl: add for %s", key)
+		status = &types.VolumesSnapshotStatus{
+			SnapshotID: config.SnapshotID,
+			// Save the config UUID and version, so it can be reported later to the controller during the rollback
+			ConfigUUIDAndVersion: config.ConfigUUIDAndVersion,
+		}
+		for _, volumeID := range config.VolumeIDs {
+			volumeStatus := ctx.lookupVolumeStatusByUUID(volumeID)
+			if volumeStatus == nil {
+				log.Errorf("handleVolumesSnapshotConfigImpl: volume %s not found", volumeID.String())
+				// Set the error in the status
+			}
+			log.Functionf("handleVolumesSnapshotConfigImpl: volume %s found, location: %s", volumeID.String(), volumeStatus.FileLocation)
+		}
+		// TODO: implement first published config handling
+		publishVolumesSnapshotStatus(ctx, status)
+	} else {
+		log.Functionf("handleVolumesSnapshotConfigImpl: modify for %s", key)
+		// TODO: implement config change handling
+		publishVolumesSnapshotStatus(ctx, status)
+	}
+	log.Functionf("handleVolumesSnapshotConfigImpl(%s) done", key)
+}
+
+func publishVolumesSnapshotStatus(ctx *volumemgrContext, status *types.VolumesSnapshotStatus) {
+	key := status.Key()
+	log.Functionf("publishVolumesSnapshotStatus(%s)", key)
+	pub := ctx.pubVolumesSnapshotStatus
+	_ = pub.Publish(key, *status)
+}
+
+func lookupVolumesSnapshotStatus(ctx *volumemgrContext, key string) *types.VolumesSnapshotStatus {
+	sub := ctx.pubVolumesSnapshotStatus
+	st, _ := sub.Get(key)
+	if st == nil {
+		log.Functionf("lookupVolumesSnapshotStatus(%s) not found", key)
+		return nil
+	}
+	status := st.(types.VolumesSnapshotStatus)
+	return &status
 }
