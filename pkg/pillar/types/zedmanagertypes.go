@@ -233,8 +233,9 @@ type AppInstanceStatus struct {
 	// Effective time, when the application should start
 	StartTime time.Time
 
-	// SnapshotOnUpdate indicates whether a snapshot should be taken during the app instance update.
-	SnapshotOnUpdate bool
+	// SnapshotOnUpgrade indicates whether a snapshot should be taken during the app instance update.
+	SnapshotOnUpgrade bool
+	UpgradeInProgress bool
 	// AvailableSnapshots contains the list of snapshots available for the app instance.
 	AvailableSnapshots []SnapshotStatus
 	// SnapshotsToBeTaken contains the list of snapshots to be taken for the app instance.

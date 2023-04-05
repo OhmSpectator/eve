@@ -130,6 +130,11 @@ func doUpdate(ctx *zedmanagerContext,
 			status.Key())
 	}
 
+	// The VM is shut down. Send a snapshot create command
+	if status.SnapshotOnUpgrade && status.UpgradeInProgress {
+		triggerSnapshot(ctx, config, status)
+	}
+
 	if status.PurgeInprogress == types.RecreateVolumes {
 		status.PurgeInprogress = types.BringUp
 		changed = true
@@ -163,9 +168,33 @@ func doUpdate(ctx *zedmanagerContext,
 	}
 	log.Functionf("Have config.Activate for %s", uuidStr)
 	c = doActivate(ctx, uuidStr, config, status)
+	status.UpgradeInProgress = false
 	changed = changed || c
 	log.Functionf("doUpdate done for %s", uuidStr)
 	return changed
+}
+
+func triggerSnapshot(ctx *zedmanagerContext, config types.AppInstanceConfig, status *types.AppInstanceStatus) {
+	for _, snapshot := range status.SnapshotsToBeTaken {
+		if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate {
+			snapshot.TimeTriggered = time.Now()
+			// Trigger Snapshot Creation
+			log.Functionf("Triggering snapshot creation for app %s", status.Key())
+			log.Errorf("@ohm: Triggering snapshot creation")
+			volumesSnapshotConfig := types.VolumesSnapshotConfig{
+				SnapshotID: snapshot.Snapshot.SnapshotID,
+				// Save the config UUID and version in the snapshot config
+				ConfigUUIDAndVersion: config.UUIDandVersion,
+				Action:               types.VolumesSnapshotCreate,
+			}
+			for _, volumeStatus := range status.VolumeRefStatusList {
+				log.Functionf("Adding volume %s to snapshot config", volumeStatus.VolumeID)
+				log.Errorf("@ohm: Adding volume %s to snapshot config", volumeStatus.VolumeID)
+				volumesSnapshotConfig.VolumeIDs = append(volumesSnapshotConfig.VolumeIDs, volumeStatus.VolumeID)
+			}
+			publishVolumesSnapshotConfig(ctx, &volumesSnapshotConfig)
+		}
+	}
 }
 
 func doInstall(ctx *zedmanagerContext,
@@ -830,6 +859,9 @@ func doInactivate(ctx *zedmanagerContext, appInstID uuid.UUID,
 			log.Functionf("doInactivate: Clearing Activate for DomainConfig for %s",
 				uuidStr)
 			dc.Activate = false
+			if status.SnapshotOnUpgrade {
+				dc.SnapshotOnInactivate = true
+			}
 			publishDomainConfig(ctx, dc)
 		}
 	}
