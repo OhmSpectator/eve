@@ -30,6 +30,12 @@ type VolumeHandler interface {
 	// with current options of VolumeStatus
 	// to be used in storage usage calculation
 	UsageFromStatus() uint64
+	// CreateSnapshot handles snapshot creation process, returns snapshot file location
+	CreateSnapshot() (string, error)
+	// RollbackToSnapshot handles rollback process
+	RollbackToSnapshot(snapshotID string) error
+	// DeleteSnapshot handles snapshot deletion
+	DeleteSnapshot(snapshotID string) error
 }
 
 // VolumeMgr is an interface to obtain information required for volume processing

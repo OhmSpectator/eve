@@ -16,6 +16,12 @@ type commonVolumeHandler struct {
 	log           *base.LogObject
 }
 
+func (handler *commonVolumeHandler) CreateSnapshot() (string, error) { return "", nil }
+
+func (handler *commonVolumeHandler) RollbackToSnapshot(snapshotID string) error { return nil }
+
+func (handler *commonVolumeHandler) DeleteSnapshot(snapshotID string) error { return nil }
+
 func (handler *commonVolumeHandler) PrepareVolume() error { return nil }
 
 func (handler *commonVolumeHandler) HandlePrepared() (bool, error) { return true, nil }

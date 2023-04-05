@@ -15,6 +15,8 @@ import (
 	"github.com/lf-edge/eve/pkg/pillar/types"
 )
 
+// TODO: add snapshot support here
+
 func GetImgInfo(log *base.LogObject, diskfile string) (*types.ImgInfo, error) {
 	var imgInfo types.ImgInfo
 
