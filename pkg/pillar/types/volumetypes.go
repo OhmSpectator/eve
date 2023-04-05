@@ -277,10 +277,10 @@ func (config VolumesSnapshotConfig) Key() string {
 }
 
 type VolumesSnapshotStatus struct {
-	// TODO: mock at the moment, will be replaced with the real message
 	SnapshotID           string
 	ConfigUUIDAndVersion UUIDandVersion
-	VolumeSnapshotFiles  map[uuid.UUID]string
+	// Metadata is a map of volumeID to metadata, depending on the volume type
+	VolumeSnapshotMeta map[uuid.UUID]interface{}
 }
 
 func (status VolumesSnapshotStatus) Key() string {
