@@ -52,6 +52,8 @@ type DomainConfig struct {
 	// once the version is changed cloud-init tool restarts in a guest.
 	// See getCloudInitVersion() and createCloudInitISO() for details.
 	CloudInitVersion uint32
+	// Create a snapshot of the disk when the domain is stopped
+	SnapshotOnInactivate bool
 }
 
 // MetaDataType of metadata service for app
