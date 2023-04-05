@@ -280,6 +280,7 @@ type VolumesSnapshotStatus struct {
 	// TODO: mock at the moment, will be replaced with the real message
 	SnapshotID           string
 	ConfigUUIDAndVersion UUIDandVersion
+	VolumeSnapshotFiles  map[uuid.UUID]string
 }
 
 func (status VolumesSnapshotStatus) Key() string {
