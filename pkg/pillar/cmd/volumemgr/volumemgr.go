@@ -518,8 +518,8 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	subZVolStatus.Activate()
 
 	subVolumesSnapshotConfig, err := ps.NewSubscription(pubsub.SubscriptionOptions{
-		CreateHandler: handleVolumesSnapshotConfigCreate,
-		ModifyHandler: handleVolumesSnapshotConfigModify,
+		CreateHandler: handleVolumesSnapshotCreate,
+		ModifyHandler: handleVolumesSnapshotModify,
 		WarningTime:   warningTime,
 		ErrorTime:     errorTime,
 		AgentName:     "zedmanager",
@@ -843,64 +843,4 @@ func handleCapabilitiesImpl(ctxArg interface{}, _ string,
 // GetCapabilities returns stored capabilities
 func (ctxPtr *volumemgrContext) GetCapabilities() *types.Capabilities {
 	return ctxPtr.capabilities
-}
-
-func handleVolumesSnapshotConfigCreate(ctxArg interface{}, key string,
-	statusArg interface{}) {
-	ctx := ctxArg.(*volumemgrContext)
-	status := statusArg.(types.VolumesSnapshotConfig)
-	handleVolumesSnapshotConfigImpl(ctx, key, status)
-}
-
-func handleVolumesSnapshotConfigModify(ctxArg interface{}, key string,
-	statusArg, _ interface{}) {
-	ctx := ctxArg.(*volumemgrContext)
-	status := statusArg.(types.VolumesSnapshotConfig)
-	handleVolumesSnapshotConfigImpl(ctx, key, status)
-}
-
-func handleVolumesSnapshotConfigImpl(ctx *volumemgrContext, key string, config types.VolumesSnapshotConfig) {
-	log.Functionf("handleVolumesSnapshotConfigImpl(%s) handles %s", key, config.Action)
-	status := lookupVolumesSnapshotStatus(ctx, key)
-	if status == nil {
-		log.Functionf("handleVolumesSnapshotConfigImpl: add for %s", key)
-		status = &types.VolumesSnapshotStatus{
-			SnapshotID: config.SnapshotID,
-			// Save the config UUID and version, so it can be reported later to the controller during the rollback
-			ConfigUUIDAndVersion: config.ConfigUUIDAndVersion,
-		}
-		for _, volumeID := range config.VolumeIDs {
-			volumeStatus := ctx.lookupVolumeStatusByUUID(volumeID)
-			if volumeStatus == nil {
-				log.Errorf("handleVolumesSnapshotConfigImpl: volume %s not found", volumeID.String())
-				// Set the error in the status
-			}
-			log.Functionf("handleVolumesSnapshotConfigImpl: volume %s found, location: %s", volumeID.String(), volumeStatus.FileLocation)
-		}
-		// TODO: implement first published config handling
-		publishVolumesSnapshotStatus(ctx, status)
-	} else {
-		log.Functionf("handleVolumesSnapshotConfigImpl: modify for %s", key)
-		// TODO: implement config change handling
-		publishVolumesSnapshotStatus(ctx, status)
-	}
-	log.Functionf("handleVolumesSnapshotConfigImpl(%s) done", key)
-}
-
-func publishVolumesSnapshotStatus(ctx *volumemgrContext, status *types.VolumesSnapshotStatus) {
-	key := status.Key()
-	log.Functionf("publishVolumesSnapshotStatus(%s)", key)
-	pub := ctx.pubVolumesSnapshotStatus
-	_ = pub.Publish(key, *status)
-}
-
-func lookupVolumesSnapshotStatus(ctx *volumemgrContext, key string) *types.VolumesSnapshotStatus {
-	sub := ctx.pubVolumesSnapshotStatus
-	st, _ := sub.Get(key)
-	if st == nil {
-		log.Functionf("lookupVolumesSnapshotStatus(%s) not found", key)
-		return nil
-	}
-	status := st.(types.VolumesSnapshotStatus)
-	return &status
 }
