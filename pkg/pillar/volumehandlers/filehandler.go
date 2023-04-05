@@ -198,3 +198,14 @@ func (handler *volumeHandlerFile) maybeResizeDisk(ctx context.Context, diskfile 
 	}
 	return nil
 }
+
+func (handler *volumeHandlerFile) CreateSnapshot() (string, error) {
+	// TODO: implement
+	handler.log.Functionf("CreateSnapshot for a file based volume (%s)", handler.status.FileLocation)
+	snapshotFile := ""
+	return snapshotFile, nil
+}
+
+func (handler *volumeHandlerFile) RollbackToSnapshot(snapshotID string) error { return nil }
+
+func (handler *volumeHandlerFile) DeleteSnapshot(snapshotID string) error { return nil }
