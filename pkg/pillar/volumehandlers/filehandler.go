@@ -199,13 +199,32 @@ func (handler *volumeHandlerFile) maybeResizeDisk(ctx context.Context, diskfile 
 	return nil
 }
 
-func (handler *volumeHandlerFile) CreateSnapshot() (string, error) {
+// CreateSnapshot creates a snapshot of the volume, returns snapshot file location as metadata
+func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, error) {
 	// TODO: implement
 	handler.log.Functionf("CreateSnapshot for a file based volume (%s)", handler.status.FileLocation)
 	snapshotFile := ""
 	return snapshotFile, nil
 }
 
-func (handler *volumeHandlerFile) RollbackToSnapshot(snapshotID string) error { return nil }
+func (handler *volumeHandlerFile) RollbackToSnapshot(snapshotMeta interface{}) error {
+	snapshotFile, ok := snapshotMeta.(string)
+	if !ok {
+		errStr := fmt.Sprintf("RollbackToSnapshot: snapshotMeta is not a string")
+		handler.log.Error(errStr)
+		return errors.New(errStr)
+	}
+	handler.log.Functionf("RollbackToSnapshot for a file based volume (%s) to snapshot (%s)", handler.status.FileLocation, snapshotFile)
+	return nil
+}
 
-func (handler *volumeHandlerFile) DeleteSnapshot(snapshotID string) error { return nil }
+func (handler *volumeHandlerFile) DeleteSnapshot(snapshotMeta interface{}) error {
+	snapshotFile, ok := snapshotMeta.(string)
+	if !ok {
+		errStr := fmt.Sprintf("DeleteSnapshot: snapshotMeta is not a string")
+		handler.log.Error(errStr)
+		return errors.New(errStr)
+	}
+	handler.log.Functionf("DeleteSnapshot %s for a file based volume (%s)", snapshotFile, handler.status.FileLocation)
+	return nil
+}

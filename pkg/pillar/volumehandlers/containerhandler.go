@@ -90,21 +90,21 @@ func (handler *volumeHandlerContainer) Populate() (bool, error) {
 	return false, nil
 }
 
-func (handler *volumeHandlerContainer) CreateSnapshot() (string, error) {
+func (handler *volumeHandlerContainer) CreateSnapshot() (interface{}, error) {
 	//TODO implement me
 	errStr := fmt.Sprintf("CreateSnapshot not implemented for container volumes")
 	handler.log.Errorf(errStr)
 	return "", fmt.Errorf(errStr)
 }
 
-func (handler *volumeHandlerContainer) RollbackToSnapshot(snapshotID string) error {
+func (handler *volumeHandlerContainer) RollbackToSnapshot(snapshotMeta interface{}) error {
 	//TODO implement me
 	errStr := fmt.Sprintf("RollbackToSnapshot not implemented for container volumes")
 	handler.log.Errorf(errStr)
 	return fmt.Errorf(errStr)
 }
 
-func (handler *volumeHandlerContainer) DeleteSnapshot(snapshotID string) error {
+func (handler *volumeHandlerContainer) DeleteSnapshot(snapshotMeta interface{}) error {
 	//TODO implement me
 	errStr := fmt.Sprintf("DeleteSnapshot not implemented for container volumes")
 	handler.log.Errorf(errStr)

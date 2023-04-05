@@ -269,7 +269,7 @@ func (handler *volumeHandlerZVol) getVolumeFilePath() (string, error) {
 	return pathToFile, nil
 }
 
-func (handler *volumeHandlerZVol) CreateSnapshot() (string, error) {
+func (handler *volumeHandlerZVol) CreateSnapshot() (interface{}, error) {
 	//TODO implement me
 	errStr := fmt.Sprintf("CreateSnapshot not implemented for zvol")
 	handler.log.Error(errStr)
@@ -277,7 +277,7 @@ func (handler *volumeHandlerZVol) CreateSnapshot() (string, error) {
 	return "", err
 }
 
-func (handler *volumeHandlerZVol) RollbackToSnapshot(snapshotID string) error {
+func (handler *volumeHandlerZVol) RollbackToSnapshot(snapshotMeta interface{}) error {
 	//TODO implement me
 	errStr := fmt.Sprintf("RollbackToSnapshot not implemented for zvol")
 	handler.log.Error(errStr)
@@ -285,7 +285,7 @@ func (handler *volumeHandlerZVol) RollbackToSnapshot(snapshotID string) error {
 	return err
 }
 
-func (handler *volumeHandlerZVol) DeleteSnapshot(snapshotID string) error {
+func (handler *volumeHandlerZVol) DeleteSnapshot(snapshotMeta interface{}) error {
 	//TODO implement me
 	errStr := fmt.Sprintf("DeleteSnapshot not implemented for zvol")
 	handler.log.Error(errStr)
