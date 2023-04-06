@@ -5,6 +5,7 @@ package types
 
 import (
 	"fmt"
+	"github.com/lf-edge/eve/api/go/info"
 	"net"
 	"time"
 
@@ -62,6 +63,15 @@ func (s SnapshotType) String() string {
 	}
 }
 
+func (s SnapshotType) ConvertToInfoSnapshotType() info.SnapshotType {
+	switch s {
+	case SnapshotTypeAppUpdate:
+		return info.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE
+	default:
+		return info.SnapshotType_SNAPSHOT_TYPE_UNSPECIFIED
+	}
+}
+
 // SnapshotDesc a description of a snapshot instance
 type SnapshotDesc struct {
 	SnapshotID   string       // UUID of the snapshot
@@ -69,10 +79,12 @@ type SnapshotDesc struct {
 }
 
 type SnapshotStatus struct {
-	Snapshot      SnapshotDesc // Description of the snapshot
-	Reported      bool         // True if the snapshot has been reported to the controller
-	TimeTriggered time.Time    // Time when the snapshot was requested
-	TimeCreated   time.Time    // Time when the snapshot was created
+	Snapshot      SnapshotDesc   // Description of the snapshot
+	Reported      bool           // True if the snapshot has been reported to the controller
+	TimeTriggered time.Time      // Time when the snapshot was requested
+	TimeCreated   time.Time      // Time when the snapshot was created
+	AppInstanceID uuid.UUID      // UUID of the app instance
+	ConfigVersion UUIDandVersion // Version of the app instance config
 }
 
 // SnapshotConfig configuration of the snapshot handling for the app instance
