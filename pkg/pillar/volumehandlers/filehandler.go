@@ -200,11 +200,12 @@ func (handler *volumeHandlerFile) maybeResizeDisk(ctx context.Context, diskfile 
 }
 
 // CreateSnapshot creates a snapshot of the volume, returns snapshot file location as metadata
-func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, error) {
+func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, time.Time, error) {
 	// TODO: implement
 	handler.log.Functionf("CreateSnapshot for a file based volume (%s)", handler.status.FileLocation)
 	snapshotFile := ""
-	return snapshotFile, nil
+	timeCreated := time.Now()
+	return snapshotFile, timeCreated, nil
 }
 
 func (handler *volumeHandlerFile) RollbackToSnapshot(snapshotMeta interface{}) error {
