@@ -269,12 +269,13 @@ func (handler *volumeHandlerZVol) getVolumeFilePath() (string, error) {
 	return pathToFile, nil
 }
 
-func (handler *volumeHandlerZVol) CreateSnapshot() (interface{}, error) {
+func (handler *volumeHandlerZVol) CreateSnapshot() (interface{}, time.Time, error) {
 	//TODO implement me
 	errStr := fmt.Sprintf("CreateSnapshot not implemented for zvol")
 	handler.log.Error(errStr)
 	err := errors.New(errStr)
-	return "", err
+	timeCreated := time.Time{}
+	return "", timeCreated, err
 }
 
 func (handler *volumeHandlerZVol) RollbackToSnapshot(snapshotMeta interface{}) error {

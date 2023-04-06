@@ -264,12 +264,14 @@ func (action VolumesSnapshotAction) String() string {
 type VolumesSnapshotConfig struct {
 	// SnapshotID is the ID of the snapshot
 	SnapshotID string
-	// ConfigUUIDAndVersion is the UUIDandVersion of the config, will be reported to the controller during rollback
-	ConfigUUIDAndVersion UUIDandVersion
 	// Action is the action to perform on the snapshot
 	Action VolumesSnapshotAction
 	// VolumeIDs is a list of volumes to snapshot
 	VolumeIDs []uuid.UUID
+	// AppUUID used as a backlink to the app
+	AppUUID uuid.UUID
+	// ConfigID is the ID of the config that created the snapshot
+	ConfigID UUIDandVersion
 }
 
 func (config VolumesSnapshotConfig) Key() string {
@@ -277,10 +279,12 @@ func (config VolumesSnapshotConfig) Key() string {
 }
 
 type VolumesSnapshotStatus struct {
-	SnapshotID           string
-	ConfigUUIDAndVersion UUIDandVersion
+	SnapshotID string
 	// Metadata is a map of volumeID to metadata, depending on the volume type
 	VolumeSnapshotMeta map[uuid.UUID]interface{}
+	TimeCreated        time.Time
+	AppUUID            uuid.UUID
+	ConfigID           UUIDandVersion
 }
 
 func (status VolumesSnapshotStatus) Key() string {

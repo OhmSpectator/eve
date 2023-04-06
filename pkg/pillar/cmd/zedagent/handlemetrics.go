@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"net/http"
 	"os"
 	"runtime"
@@ -1196,6 +1197,22 @@ func PublishAppInfoToZedCloud(ctx *zedagentContext, uuid string,
 		for _, vr := range aiStatus.VolumeRefStatusList {
 			ReportAppInfo.VolumeRefs = append(ReportAppInfo.VolumeRefs,
 				vr.VolumeID.String())
+		}
+
+		for _, snap := range aiStatus.AvailableSnapshots {
+			snapInfo := new(info.ZInfoSnapshot)
+			snapInfo.Id = snap.Snapshot.SnapshotID
+			snapInfo.ConfigId = snap.ConfigVersion.UUID.String()
+			snapInfo.ConfigVersion = snap.ConfigVersion.Version
+			snapInfo.CreateTime = timestamppb.New(snap.TimeCreated)
+			snapInfo.Type = snap.Snapshot.SnapshotType.ConvertToInfoSnapshotType()
+			snapInfo.SnapErr = nil
+			ReportAppInfo.Snapshots = append(ReportAppInfo.Snapshots, snapInfo)
+		}
+
+		for _, snap := range ReportAppInfo.Snapshots {
+			log.Functionf("PublishAppInfoToZedCloud: snapshot %s", snap)
+			log.Errorf("@ohm: PublishAppInfoToZedCloud: snapshot %s", snap)
 		}
 	}
 

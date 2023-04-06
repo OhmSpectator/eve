@@ -183,9 +183,9 @@ func triggerSnapshot(ctx *zedmanagerContext, config types.AppInstanceConfig, sta
 			log.Errorf("@ohm: Triggering snapshot creation")
 			volumesSnapshotConfig := types.VolumesSnapshotConfig{
 				SnapshotID: snapshot.Snapshot.SnapshotID,
-				// Save the config UUID and version in the snapshot config
-				ConfigUUIDAndVersion: config.UUIDandVersion,
-				Action:               types.VolumesSnapshotCreate,
+				Action:     types.VolumesSnapshotCreate,
+				AppUUID:    status.UUIDandVersion.UUID,
+				ConfigID:   config.UUIDandVersion,
 			}
 			for _, volumeStatus := range status.VolumeRefStatusList {
 				log.Functionf("Adding volume %s to snapshot config", volumeStatus.VolumeID)
@@ -978,6 +978,7 @@ func doUninstall(ctx *zedmanagerContext, appInstID uuid.UUID,
 		MaybeRemoveVolumeRefConfig(ctx, appInstID,
 			vrs.VolumeID, vrs.GenerationCounter, vrs.LocalGenerationCounter)
 		changed = true
+		// TODO Remove the corresponding Snapshots here
 	}
 	log.Tracef("Done with all volume refs removes for %s",
 		appInstID)

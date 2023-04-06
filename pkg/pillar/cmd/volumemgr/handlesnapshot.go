@@ -7,12 +7,14 @@ import (
 	"github.com/lf-edge/eve/pkg/pillar/types"
 	"github.com/lf-edge/eve/pkg/pillar/volumehandlers"
 	"github.com/satori/go.uuid"
+	"time"
 )
 
 func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg interface{}) {
 	ctx := ctxArg.(*volumemgrContext)
 	config := configArg.(types.VolumesSnapshotConfig)
 	log.Functionf("handleVolumesSnapshotCreate(%s) handles %s", key, config.Action)
+	log.Errorf("@ohm: handleVolumesSnapshotCreate: %s handles %s", key, config.Action)
 	if config.Action != types.VolumesSnapshotCreate {
 		log.Errorf("handleVolumesSnapshotCreate: unexpected action %s", config.Action)
 		// TODO Set the error in the status
@@ -29,8 +31,8 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 	snapshotStatus = &types.VolumesSnapshotStatus{
 		SnapshotID: config.SnapshotID,
 		// Save the config UUID and version, so it can be reported later to the controller during the rollback
-		ConfigUUIDAndVersion: config.ConfigUUIDAndVersion,
-		VolumeSnapshotMeta:   make(map[uuid.UUID]interface{}, len(config.VolumeIDs)),
+		VolumeSnapshotMeta: make(map[uuid.UUID]interface{}, len(config.VolumeIDs)),
+		AppUUID:            config.AppUUID,
 	}
 	// Find the corresponding volume status
 	for _, volumeID := range config.VolumeIDs {
@@ -39,31 +41,35 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 			log.Errorf("handleVolumesSnapshotCreate: volume %s not found", volumeID.String())
 			// TODO Set the error in the status, clean the snapshotStatus
 		}
-		snapshotMeta, err := createVolumeSnapshot(ctx, volumeStatus)
+		log.Errorf("@ohm: handleVolumesSnapshotCreate: volume %s found %s", volumeID.String(), volumeStatus.FileLocation)
+		snapshotMeta, timeCreated, err := createVolumeSnapshot(ctx, volumeStatus)
 		if err != nil {
 			log.Errorf("handleVolumesSnapshotCreate: failed to create volume snapshot for %s, %s", volumeID.String(), err.Error())
 			// TODO Set the error in the status
 		}
 		snapshotStatus.VolumeSnapshotMeta[volumeID] = snapshotMeta
-
+		snapshotStatus.TimeCreated = timeCreated
+		snapshotStatus.ConfigID = config.ConfigID
 	}
+	log.Errorf("@ohm: handleVolumesSnapshotCreate: snapshotStatus %v", snapshotStatus)
 	publishVolumesSnapshotStatus(ctx, snapshotStatus)
 }
 
-func createVolumeSnapshot(ctx *volumemgrContext, volumeStatus *types.VolumeStatus) (interface{}, error) {
+func createVolumeSnapshot(ctx *volumemgrContext, volumeStatus *types.VolumeStatus) (interface{}, time.Time, error) {
 	volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, volumeStatus)
-	snapshotMeta, err := volumeHandlers.CreateSnapshot()
+	snapshotMeta, timeCreated, err := volumeHandlers.CreateSnapshot()
 	if err != nil {
 		log.Errorf("createVolumeSnapshot: failed to create snapshot for %s, %s", volumeStatus.VolumeID.String(), err.Error())
-		return "", err
+		return "", timeCreated, err
 	}
-	return snapshotMeta, nil
+	return snapshotMeta, timeCreated, nil
 }
 
 func handleVolumesSnapshotModify(ctxArg interface{}, key string, configArg, _ interface{}) {
 	ctx := ctxArg.(*volumemgrContext)
 	config := configArg.(types.VolumesSnapshotConfig)
 	log.Functionf("handleVolumesSnapshotModify(%s) handles %s", key, config.Action)
+	log.Errorf("@ohm: handleVolumesSnapshotModify: %s handles %s", key, config.Action)
 	if config.Action != types.VolumesSnapshotRollback && config.Action != types.VolumesSnapshotDelete {
 		log.Errorf("handleVolumesSnapshotModify: unexpected action %s", config.Action)
 		// TODO Set the error in the status
