@@ -107,7 +107,6 @@ func handleVolumesSnapshotModify(ctxArg interface{}, key string, configArg, _ in
 		}
 
 	}
-	// TODO: implement for rollback, delete
 	publishVolumesSnapshotStatus(ctx, snapshotStatus)
 	log.Functionf("handleVolumesSnapshotConfigImpl(%s) done", key)
 }

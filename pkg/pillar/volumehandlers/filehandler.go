@@ -204,6 +204,7 @@ func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, time.Time, erro
 	// TODO: implement
 	handler.log.Functionf("CreateSnapshot for a file based volume (%s)", handler.status.FileLocation)
 	snapshotFile := ""
+	// Replace VolumeStatus with a new snapshot file
 	timeCreated := time.Now()
 	return snapshotFile, timeCreated, nil
 }
