@@ -185,7 +185,7 @@ func triggerSnapshot(ctx *zedmanagerContext, config types.AppInstanceConfig, sta
 				SnapshotID: snapshot.Snapshot.SnapshotID,
 				Action:     types.VolumesSnapshotCreate,
 				AppUUID:    status.UUIDandVersion.UUID,
-				ConfigID:   config.UUIDandVersion,
+				//ConfigID:   config.UUIDandVersion,
 			}
 			for _, volumeStatus := range status.VolumeRefStatusList {
 				log.Functionf("Adding volume %s to snapshot config", volumeStatus.VolumeID)

@@ -420,22 +420,24 @@ func handleVolumesSnapshotStatusCreate(ctx interface{}, key string, status inter
 		log.Errorf("handleVolumesSnapshotStatusCreate: AppInstanceStatus not found for %s", volumesSnapshotStatus.AppUUID.String())
 		return
 	}
-	err := moveSnapshotToAvailable(appInstanceStatus, volumesSnapshotStatus.SnapshotID)
+	err := moveSnapshotToAvailable(appInstanceStatus, volumesSnapshotStatus)
 	if err != nil {
 		log.Errorf("handleVolumesSnapshotStatusCreate: moveSnapshotToAvailable failed: %s", err)
 	}
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 }
 
-func moveSnapshotToAvailable(status *types.AppInstanceStatus, snapshotID string) error {
+func moveSnapshotToAvailable(status *types.AppInstanceStatus, volumesSnapshotStatus types.VolumesSnapshotStatus) error {
 	log.Noticef("moveSnapshotToAvailable")
 	var snapToBeMoved types.SnapshotStatus
 	// Remove from SnapshotsToBeTaken
-	status.SnapshotsToBeTaken, snapToBeMoved = removeSnapshotFromList(status.SnapshotsToBeTaken, snapshotID)
+	status.SnapshotsToBeTaken, snapToBeMoved = removeSnapshotFromList(status.SnapshotsToBeTaken, volumesSnapshotStatus.SnapshotID)
 	if snapToBeMoved.Snapshot.SnapshotID == "" {
-		log.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", snapshotID)
-		return fmt.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", snapshotID)
+		log.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus)
+		return fmt.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus)
 	}
+	// Update the time created from the volumesSnapshotStatus
+	snapToBeMoved.TimeCreated = volumesSnapshotStatus.TimeCreated
 	// Add to AvailableSnapshots
 	status.AvailableSnapshots = append(status.AvailableSnapshots, snapToBeMoved)
 	// Mark as reported
@@ -695,10 +697,12 @@ func handleCreate(ctxArg interface{}, key string,
 	status.StartTime = ctx.delayBaseTime.Add(config.Delay)
 
 	// Check if there is any during-the-update snapshot request for this app
-	status.SnapshotOnUpgrade = isSnapshotRequestedOnUpdate(config)
-	status.MaxSnapshots = config.Snapshot.MaxSnapshots
+	_ = updateSnapshotInfoInAppStatus(&status, config)
+	log.Errorf("@ohm handleCreate(%v) for %s, snapshotOnUpgrade: %v, maxSnapshots: %d", config.UUIDandVersion, config.DisplayName, status.SnapshotOnUpgrade, status.MaxSnapshots)
+	//status.SnapshotOnUpgrade = isSnapshotRequestedOnUpdate(config)
+	//status.MaxSnapshots = config.Snapshot.MaxSnapshots
 	// All the snapshots that appear in the first config are considered to be taken
-	if config.Snapshot.Snapshots != nil {
+	/*if config.Snapshot.Snapshots != nil {
 		toBeTaken := config.Snapshot.Snapshots
 		// If the number of snapshots requested is more than the maxSnapshots, we take only the first maxSnapshots
 		if config.Snapshot.MaxSnapshots < uint32(len(config.Snapshot.Snapshots)) {
@@ -714,6 +718,10 @@ func handleCreate(ctxArg interface{}, key string,
 			log.Functionf("For %s, adding snapshot %s to the list of snapshots to be taken", config.DisplayName, snap.SnapshotID)
 			status.SnapshotsToBeTaken = append(status.SnapshotsToBeTaken, types.SnapshotStatus{Snapshot: snap, Reported: false, AppInstanceID: config.UUIDandVersion.UUID})
 		}
+	}
+	*/
+	for _, snap := range status.SnapshotsToBeTaken {
+		log.Errorf("@ohm: For %s, snapshot %s is to be taken", config.DisplayName, snap.Snapshot.SnapshotID)
 	}
 
 	// Do we have a PurgeCmd counter from before the reboot?
@@ -946,6 +954,7 @@ func updateSnapshotInfoInAppStatus(status *types.AppInstanceStatus, config types
 		newSnapshotStatus := types.SnapshotStatus{
 			Snapshot:      snapshot,
 			Reported:      false,
+			AppInstanceID: config.UUIDandVersion.UUID,
 			ConfigVersion: config.UUIDandVersion,
 		}
 		status.SnapshotsToBeTaken = append(status.SnapshotsToBeTaken, newSnapshotStatus)
