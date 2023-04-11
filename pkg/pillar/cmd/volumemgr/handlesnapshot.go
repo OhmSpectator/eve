@@ -49,7 +49,6 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 		}
 		snapshotStatus.VolumeSnapshotMeta[volumeID] = snapshotMeta
 		snapshotStatus.TimeCreated = timeCreated
-		snapshotStatus.ConfigID = config.ConfigID
 	}
 	log.Errorf("@ohm: handleVolumesSnapshotCreate: snapshotStatus %v", snapshotStatus)
 	publishVolumesSnapshotStatus(ctx, snapshotStatus)
