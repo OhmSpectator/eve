@@ -271,7 +271,7 @@ type VolumesSnapshotConfig struct {
 	// AppUUID used as a backlink to the app
 	AppUUID uuid.UUID
 	// ConfigID is the ID of the config that created the snapshot
-	ConfigID UUIDandVersion
+	//ConfigID UUIDandVersion
 }
 
 func (config VolumesSnapshotConfig) Key() string {
@@ -284,7 +284,6 @@ type VolumesSnapshotStatus struct {
 	VolumeSnapshotMeta map[uuid.UUID]interface{}
 	TimeCreated        time.Time
 	AppUUID            uuid.UUID
-	ConfigID           UUIDandVersion
 }
 
 func (status VolumesSnapshotStatus) Key() string {
