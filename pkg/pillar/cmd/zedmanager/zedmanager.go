@@ -433,8 +433,8 @@ func moveSnapshotToAvailable(status *types.AppInstanceStatus, volumesSnapshotSta
 	// Remove from SnapshotsToBeTaken
 	status.SnapshotsToBeTaken, snapToBeMoved = removeSnapshotFromList(status.SnapshotsToBeTaken, volumesSnapshotStatus.SnapshotID)
 	if snapToBeMoved.Snapshot.SnapshotID == "" {
-		log.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus)
-		return fmt.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus)
+		log.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus.SnapshotID)
+		return fmt.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus.SnapshotID)
 	}
 	// Update the time created from the volumesSnapshotStatus
 	snapToBeMoved.TimeCreated = volumesSnapshotStatus.TimeCreated
@@ -920,12 +920,14 @@ func handleModify(ctxArg interface{}, key string,
 	if config.Snapshot.RollbackCmd.Counter != oldConfig.Snapshot.RollbackCmd.Counter {
 		log.Functionf("handleModify(%v) for %s: Snapshot to be rolled back: %v",
 			config.UUIDandVersion, config.DisplayName, config.Snapshot.ActiveSnapshot)
-		// Trigger Snapshot Rollback
-		volumesSnapshotConfig := types.VolumesSnapshotConfig{
-			SnapshotID: config.Snapshot.ActiveSnapshot,
-			Action:     types.VolumesSnapshotRollback,
-		}
-		publishVolumesSnapshotConfig(ctx, &volumesSnapshotConfig)
+		// Mark the VM to be rebooted
+		// XXX Should we trigger the rollback here?
+		status.RestartInprogress = types.BringDown
+		status.State = types.RESTARTING
+		status.RestartStartedAt = time.Now()
+		status.RollbackInProgress = true
+		publishAppInstanceStatus(ctx, status)
+		//triggerRollback(config, ctx)
 		// TODO: Publish the message to the volume manager, so that it can rollback to the proper snapshot.
 	}
 
