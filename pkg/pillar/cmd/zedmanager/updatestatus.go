@@ -135,6 +135,11 @@ func doUpdate(ctx *zedmanagerContext,
 		triggerSnapshot(ctx, config, status)
 	}
 
+	// Trigger the rollback if needed
+	if status.RollbackInProgress {
+		triggerRollback(ctx, config, status)
+	}
+
 	if status.PurgeInprogress == types.RecreateVolumes {
 		status.PurgeInprogress = types.BringUp
 		changed = true
@@ -169,6 +174,7 @@ func doUpdate(ctx *zedmanagerContext,
 	log.Functionf("Have config.Activate for %s", uuidStr)
 	c = doActivate(ctx, uuidStr, config, status)
 	status.UpgradeInProgress = false
+	status.RollbackInProgress = false
 	changed = changed || c
 	log.Functionf("doUpdate done for %s", uuidStr)
 	return changed
@@ -185,7 +191,6 @@ func triggerSnapshot(ctx *zedmanagerContext, config types.AppInstanceConfig, sta
 				SnapshotID: snapshot.Snapshot.SnapshotID,
 				Action:     types.VolumesSnapshotCreate,
 				AppUUID:    status.UUIDandVersion.UUID,
-				//ConfigID:   config.UUIDandVersion,
 			}
 			for _, volumeStatus := range status.VolumeRefStatusList {
 				log.Functionf("Adding volume %s to snapshot config", volumeStatus.VolumeID)
@@ -195,6 +200,21 @@ func triggerSnapshot(ctx *zedmanagerContext, config types.AppInstanceConfig, sta
 			publishVolumesSnapshotConfig(ctx, &volumesSnapshotConfig)
 		}
 	}
+}
+
+func triggerRollback(ctx *zedmanagerContext, config types.AppInstanceConfig, status *types.AppInstanceStatus) {
+	// Trigger Snapshot Rollback
+	volumesSnapshotConfig := types.VolumesSnapshotConfig{
+		SnapshotID: config.Snapshot.ActiveSnapshot,
+		Action:     types.VolumesSnapshotRollback,
+		AppUUID:    config.UUIDandVersion.UUID,
+	}
+	for _, volumeStatus := range status.VolumeRefStatusList {
+		log.Functionf("Adding volume %s to snapshot config", volumeStatus.VolumeID)
+		log.Errorf("@ohm: Adding volume %s to snapshot config", volumeStatus.VolumeID)
+		volumesSnapshotConfig.VolumeIDs = append(volumesSnapshotConfig.VolumeIDs, volumeStatus.VolumeID)
+	}
+	publishVolumesSnapshotConfig(ctx, &volumesSnapshotConfig)
 }
 
 func doInstall(ctx *zedmanagerContext,
