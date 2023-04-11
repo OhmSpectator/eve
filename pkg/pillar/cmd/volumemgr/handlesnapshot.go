@@ -112,6 +112,8 @@ func handleVolumesSnapshotModify(ctxArg interface{}, key string, configArg, _ in
 }
 
 func rollbackToSnapshot(ctx *volumemgrContext, status *types.VolumeStatus, meta interface{}) error {
+	log.Functionf("rollbackToSnapshot(%s)", status.VolumeID.String())
+	log.Errorf("@ohm: rollbackToSnapshot: %s", status.VolumeID.String())
 	volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, status)
 	err := volumeHandlers.RollbackToSnapshot(meta)
 	if err != nil {
