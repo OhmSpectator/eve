@@ -252,7 +252,8 @@ type AppInstanceStatus struct {
 	// SnapshotsToBeTaken contains the list of snapshots to be taken for the app instance.
 	SnapshotsToBeTaken []SnapshotStatus
 	// MaxSnapshots indicates the maximum number of snapshots to be kept for the app instance.
-	MaxSnapshots uint32
+	MaxSnapshots       uint32
+	RollbackInProgress bool
 }
 
 // AppCount is uint8 and it should be sufficient for the number of apps we can support

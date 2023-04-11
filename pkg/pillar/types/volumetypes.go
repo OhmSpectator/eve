@@ -284,6 +284,7 @@ type VolumesSnapshotStatus struct {
 	VolumeSnapshotMeta map[uuid.UUID]interface{}
 	TimeCreated        time.Time
 	AppUUID            uuid.UUID
+	ErrorAndTimeWithSource
 }
 
 func (status VolumesSnapshotStatus) Key() string {
