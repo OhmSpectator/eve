@@ -41,6 +41,7 @@ const (
 )
 
 var testSnapshot = uuid.Nil
+var testCounter = 0
 
 func parseConfig(getconfigCtx *getconfigContext, config *zconfig.EdgeDevConfig,
 	source configSource) configProcessingRetval {
@@ -545,12 +546,21 @@ func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 		appInstance.FixedResources.CPUsPinned = cfgApp.Fixedresources.PinCpu
 
 		// Mock for the test
+		var activeSnapshot uuid.UUID
+		testCounter++
 		if testSnapshot == uuid.Nil {
 			testSnapshot, _ = uuid.NewV4()
+		} else {
+			activeSnapshot = testSnapshot
 		}
 		cfgApp.Snapshot = &zconfig.SnapshotConfig{
 			MaxSnapshots: 1,
 			Snapshots:    make([]*zconfig.SnapshotDesc, 1),
+		}
+		if activeSnapshot != uuid.Nil && testCounter >= 3 {
+			cfgApp.Snapshot.RollbackCmd = new(zconfig.InstanceOpsCmd)
+			cfgApp.Snapshot.ActiveSnapshot = activeSnapshot.String()
+			cfgApp.Snapshot.RollbackCmd.Counter = 241
 		}
 		cfgApp.Snapshot.Snapshots[0] = &zconfig.SnapshotDesc{
 			Id:   testSnapshot.String(),
