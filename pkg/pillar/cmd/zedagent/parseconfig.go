@@ -557,7 +557,7 @@ func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 			MaxSnapshots: 1,
 			Snapshots:    make([]*zconfig.SnapshotDesc, 1),
 		}
-		if activeSnapshot != uuid.Nil && testCounter >= 3 {
+		if activeSnapshot != uuid.Nil && testCounter >= 4 {
 			cfgApp.Snapshot.RollbackCmd = new(zconfig.InstanceOpsCmd)
 			cfgApp.Snapshot.ActiveSnapshot = activeSnapshot.String()
 			cfgApp.Snapshot.RollbackCmd.Counter = 241
