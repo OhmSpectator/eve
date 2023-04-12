@@ -8,8 +8,11 @@
 package zedmanager
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"sort"
 	"time"
 
@@ -461,6 +464,95 @@ func removeSnapshotFromList(snapshotStatuses []types.SnapshotStatus, id string) 
 func handleVolumesSnapshotStatusModify(ctx interface{}, key string, status interface{}, status2 interface{}) {
 	log.Noticef("handleVolumesSnapshotStatusModify")
 	log.Errorf("@ohm: handleVolumesSnapshotStatusModify: Not implemented yet")
+	// Reaction to a snapshot rollback
+	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
+	zedmanagerCtx := ctx.(*zedmanagerContext)
+	appInstanceStatus := lookupAppInstanceStatus(zedmanagerCtx, volumesSnapshotStatus.AppUUID.String())
+	if appInstanceStatus == nil {
+		log.Errorf("handleVolumesSnapshotStatusModify: AppInstanceStatus not found for %s", volumesSnapshotStatus.AppUUID.String())
+		return
+	}
+	err := restoreAndApplyConfigFromSnapshot(zedmanagerCtx, volumesSnapshotStatus)
+	if err != nil {
+		log.Errorf("handleVolumesSnapshotStatusModify: restoreAndApplyConfigFromSnapshot failed: %s", err)
+	}
+	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
+}
+
+func restoreAndApplyConfigFromSnapshot(ctx *zedmanagerContext, status types.VolumesSnapshotStatus) error {
+	log.Noticef("restoreAndApplyConfigFromSnapshot")
+	appInstanceStatus := lookupAppInstanceStatus(ctx, status.AppUUID.String())
+	if appInstanceStatus == nil {
+		log.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceStatus not found for %s", status.AppUUID.String())
+		return fmt.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceStatus not found for %s", status.AppUUID.String())
+	}
+	// Get the snapshot status from the available snapshots
+	snapshotStatus := getSnapshotStatusFromAvailableSnapshots(appInstanceStatus, status.SnapshotID)
+	if snapshotStatus == nil {
+		log.Errorf("restoreAndApplyConfigFromSnapshot: SnapshotStatus not found for %s", status.SnapshotID)
+		return fmt.Errorf("restoreAndApplyConfigFromSnapshot: SnapshotStatus not found for %s", status.SnapshotID)
+	}
+	// Get the app instance config from the snapshot
+	appInstanceConfig := getAppInstanceConfigFromSnapshot(snapshotStatus)
+	if appInstanceConfig == nil {
+		log.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceConfig not found for %s", status.SnapshotID)
+		return fmt.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceConfig not found for %s", status.SnapshotID)
+	}
+	// Get the app instance config from the app instance status
+	currentAppInstanceConfig := lookupAppInstanceConfig(ctx, appInstanceStatus.Key())
+	if currentAppInstanceConfig == nil {
+		log.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceConfig not found for %s", appInstanceStatus.Key())
+		return fmt.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceConfig not found for %s", appInstanceStatus.Key())
+	}
+	// Apply the app instance config from the snapshot
+	handleModify(ctx, appInstanceStatus.Key(), appInstanceConfig, currentAppInstanceConfig)
+	// Publish the app instance status
+	publishAppInstanceStatus(ctx, appInstanceStatus)
+	return nil
+
+}
+
+func getAppInstanceConfigFromSnapshot(status *types.SnapshotStatus) *types.AppInstanceConfig {
+	log.Noticef("getAppInstanceConfigFromSnapshot")
+	configFile := getConfigFilenameForSnapshot(status.Snapshot.SnapshotID)
+	// check for the existence of the config file
+	if _, err := os.Stat(configFile); os.IsNotExist(err) {
+		log.Errorf("getAppInstanceConfigFromSnapshot: Config file not found for %s", status.Snapshot.SnapshotID)
+		return nil
+	}
+	appInstanceConfig, err := deserializeConfig(configFile)
+	if err != nil {
+		log.Errorf("getAppInstanceConfigFromSnapshot: deserializeConfig failed: %s", err)
+		return nil
+	}
+	return appInstanceConfig
+}
+
+func deserializeConfig(file string) (*types.AppInstanceConfig, error) {
+	log.Noticef("deserializeConfig")
+	var appInstanceConfig types.AppInstanceConfig
+	configFile, err := os.Open(file)
+	if err != nil {
+		log.Errorf("deserializeConfig: Open failed %s", err)
+		return nil, err
+	}
+	defer configFile.Close()
+	jsonParser := json.NewDecoder(configFile)
+	if err = jsonParser.Decode(&appInstanceConfig); err != nil {
+		log.Errorf("deserializeConfig: Decode failed %s", err)
+		return nil, err
+	}
+	return &appInstanceConfig, nil
+}
+
+func getSnapshotStatusFromAvailableSnapshots(status *types.AppInstanceStatus, id string) *types.SnapshotStatus {
+	log.Noticef("getSnapshotStatusFromAvailableSnapshots")
+	for _, snap := range status.AvailableSnapshots {
+		if snap.Snapshot.SnapshotID == id {
+			return &snap
+		}
+	}
+	return nil
 }
 
 func handleVolumesSnapshotStatusDelete(ctx interface{}, key string, status interface{}) {
@@ -857,6 +949,11 @@ func handleModify(ctxArg interface{}, key string,
 	// indicates a significant change in the application, such as an upgrade.
 	if status.SnapshotOnUpgrade && (needRestart || needPurge) {
 		status.UpgradeInProgress = true
+		err := saveConfigForSnapshots(status, oldConfig)
+		if err != nil {
+			log.Errorf("handleModify(%v) for %s: error saving old config for snapshots: %v",
+				config.UUIDandVersion, config.DisplayName, err)
+		}
 	} else {
 		status.UpgradeInProgress = false
 	}
@@ -921,14 +1018,11 @@ func handleModify(ctxArg interface{}, key string,
 		log.Functionf("handleModify(%v) for %s: Snapshot to be rolled back: %v",
 			config.UUIDandVersion, config.DisplayName, config.Snapshot.ActiveSnapshot)
 		// Mark the VM to be rebooted
-		// XXX Should we trigger the rollback here?
 		status.RestartInprogress = types.BringDown
 		status.State = types.RESTARTING
 		status.RestartStartedAt = time.Now()
 		status.RollbackInProgress = true
 		publishAppInstanceStatus(ctx, status)
-		//triggerRollback(config, ctx)
-		// TODO: Publish the message to the volume manager, so that it can rollback to the proper snapshot.
 	}
 
 	status.UUIDandVersion = config.UUIDandVersion
@@ -941,6 +1035,64 @@ func handleModify(ctxArg interface{}, key string,
 	}
 	publishAppInstanceStatus(ctx, status)
 	log.Functionf("handleModify done for %s", config.DisplayName)
+}
+
+// Set the old config to a snapshot status of the snapshots to be taken on upgrade
+func saveConfigForSnapshots(status *types.AppInstanceStatus, oldConfig types.AppInstanceConfig) error {
+	for _, snapshot := range status.SnapshotsToBeTaken {
+		if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate {
+			// Set the old config version to the snapshot status
+			snapshot.ConfigVersion = oldConfig.UUIDandVersion
+			// Serialize the old config and store it in a file
+			err := serializeConfigForSnapshot(oldConfig, snapshot.Snapshot.SnapshotID)
+			if err != nil {
+				log.Errorf("Failed to serialize the old config for %s, error: %s", oldConfig.DisplayName, err)
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func serializeConfigForSnapshot(config types.AppInstanceConfig, snapshotID string) error {
+	// Store the old config in a file, so that we can use it to roll back to the previous version
+	// if the upgrade fails
+	configAsBytes, err := json.Marshal(config)
+	if err != nil {
+		log.Errorf("Failed to marshal the old config for %s, error: %s", config.DisplayName, err)
+		return err
+	}
+	err = createConfigsForSnapshotsDir()
+	if err != nil {
+		log.Errorf("Failed to create the config dir for %s, error: %s", config.DisplayName, err)
+		return err
+	}
+	configFile := getConfigFilenameForSnapshot(snapshotID)
+	err = ioutil.WriteFile(configFile, configAsBytes, 0644)
+	if err != nil {
+		log.Errorf("Failed to write the old config for %s, error: %s", config.DisplayName, err)
+		return err
+	}
+	return nil
+}
+
+func createConfigsForSnapshotsDir() error {
+	if _, err := os.Stat(types.ConfigsForSnapshotsDirname); err == nil {
+		// Directory already exists
+		return nil
+	}
+	// Create the directory for storing the old config
+	err := os.MkdirAll(types.ConfigsForSnapshotsDirname, 0755)
+	if err != nil {
+		log.Errorf("Failed to create the config dir for snapshots, error: %s", err)
+		return err
+	}
+	return nil
+}
+
+func getConfigFilenameForSnapshot(snapshotID string) string {
+	configFilename := fmt.Sprintf("%s/%s", types.ConfigsForSnapshotsDirname, snapshotID)
+	return configFilename
 }
 
 func updateSnapshotInfoInAppStatus(status *types.AppInstanceStatus, config types.AppInstanceConfig) []types.SnapshotDesc {
@@ -957,7 +1109,7 @@ func updateSnapshotInfoInAppStatus(status *types.AppInstanceStatus, config types
 			Snapshot:      snapshot,
 			Reported:      false,
 			AppInstanceID: config.UUIDandVersion.UUID,
-			ConfigVersion: config.UUIDandVersion,
+			// ConfigVersion is set when the snapshot is triggered
 		}
 		status.SnapshotsToBeTaken = append(status.SnapshotsToBeTaken, newSnapshotStatus)
 	}
