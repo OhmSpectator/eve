@@ -132,7 +132,7 @@ func doUpdate(ctx *zedmanagerContext,
 
 	// The VM is shut down. Send a snapshot create command
 	if status.SnapshotOnUpgrade && status.UpgradeInProgress {
-		triggerSnapshot(ctx, config, status)
+		triggerSnapshot(ctx, status)
 	}
 
 	// Trigger the rollback if needed
@@ -180,7 +180,7 @@ func doUpdate(ctx *zedmanagerContext,
 	return changed
 }
 
-func triggerSnapshot(ctx *zedmanagerContext, config types.AppInstanceConfig, status *types.AppInstanceStatus) {
+func triggerSnapshot(ctx *zedmanagerContext, status *types.AppInstanceStatus) {
 	for _, snapshot := range status.SnapshotsToBeTaken {
 		if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate {
 			snapshot.TimeTriggered = time.Now()
