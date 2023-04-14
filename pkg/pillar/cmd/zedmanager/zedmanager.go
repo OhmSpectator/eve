@@ -432,28 +432,28 @@ func handleVolumesSnapshotStatusCreate(ctx interface{}, key string, status inter
 
 func moveSnapshotToAvailable(status *types.AppInstanceStatus, volumesSnapshotStatus types.VolumesSnapshotStatus) error {
 	log.Noticef("moveSnapshotToAvailable")
-	var snapToBeMoved types.SnapshotStatus
+	var snapToBeMoved *types.SnapshotStatus
 	// Remove from SnapshotsToBeTaken
 	status.SnapshotsToBeTaken, snapToBeMoved = removeSnapshotFromList(status.SnapshotsToBeTaken, volumesSnapshotStatus.SnapshotID)
-	if snapToBeMoved.Snapshot.SnapshotID == "" {
+	if snapToBeMoved == nil {
 		log.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus.SnapshotID)
 		return fmt.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus.SnapshotID)
 	}
 	// Update the time created from the volumesSnapshotStatus
 	snapToBeMoved.TimeCreated = volumesSnapshotStatus.TimeCreated
 	// Add to AvailableSnapshots
-	status.AvailableSnapshots = append(status.AvailableSnapshots, snapToBeMoved)
+	status.AvailableSnapshots = append(status.AvailableSnapshots, *snapToBeMoved)
 	// Mark as reported
 	snapToBeMoved.Reported = true
 	return nil
 }
 
-func removeSnapshotFromList(snapshotStatuses []types.SnapshotStatus, id string) ([]types.SnapshotStatus, types.SnapshotStatus) {
+func removeSnapshotFromList(snapshotStatuses []types.SnapshotStatus, id string) ([]types.SnapshotStatus, *types.SnapshotStatus) {
 	log.Noticef("removeSnapshotFromList")
-	var removedSnap types.SnapshotStatus
+	var removedSnap *types.SnapshotStatus = nil
 	for i, snap := range snapshotStatuses {
 		if snap.Snapshot.SnapshotID == id {
-			removedSnap = snap
+			removedSnap = &snap
 			snapshotStatuses = append(snapshotStatuses[:i], snapshotStatuses[i+1:]...)
 			break
 		}
