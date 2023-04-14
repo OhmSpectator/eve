@@ -505,7 +505,7 @@ func restoreAndApplyConfigFromSnapshot(ctx *zedmanagerContext, status types.Volu
 		return fmt.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceConfig not found for %s", appInstanceStatus.Key())
 	}
 	// Apply the app instance config from the snapshot
-	handleModify(ctx, appInstanceStatus.Key(), snappedAppInstanceConfig, currentAppInstanceConfig)
+	handleModify(ctx, appInstanceStatus.Key(), *snappedAppInstanceConfig, *currentAppInstanceConfig)
 	// Publish the app instance status
 	publishAppInstanceStatus(ctx, appInstanceStatus)
 	return nil
