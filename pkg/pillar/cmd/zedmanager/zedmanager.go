@@ -1037,16 +1037,16 @@ func handleModify(ctxArg interface{}, key string,
 	log.Functionf("handleModify done for %s", config.DisplayName)
 }
 
-// Set the old config to a snapshot status of the snapshots to be taken on upgrade
-func saveConfigForSnapshots(status *types.AppInstanceStatus, oldConfig types.AppInstanceConfig) error {
-	for _, snapshot := range status.SnapshotsToBeTaken {
+// Set the config to a snapshot status of the snapshots to be taken on upgrade
+func saveConfigForSnapshots(status *types.AppInstanceStatus, config types.AppInstanceConfig) error {
+	for i, snapshot := range status.SnapshotsToBeTaken {
 		if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate {
 			// Set the old config version to the snapshot status
-			snapshot.ConfigVersion = oldConfig.UUIDandVersion
+			status.SnapshotsToBeTaken[i].ConfigVersion = config.UUIDandVersion
 			// Serialize the old config and store it in a file
-			err := serializeConfigForSnapshot(oldConfig, snapshot.Snapshot.SnapshotID)
+			err := serializeConfigForSnapshot(config, snapshot.Snapshot.SnapshotID)
 			if err != nil {
-				log.Errorf("Failed to serialize the old config for %s, error: %s", oldConfig.DisplayName, err)
+				log.Errorf("Failed to serialize the old config for %s, error: %s", config.DisplayName, err)
 				return err
 			}
 		}
