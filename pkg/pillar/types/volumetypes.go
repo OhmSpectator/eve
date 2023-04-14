@@ -271,7 +271,6 @@ type VolumesSnapshotConfig struct {
 	// AppUUID used as a backlink to the app
 	AppUUID uuid.UUID
 	// ConfigID is the ID of the config that created the snapshot
-	//ConfigID UUIDandVersion
 }
 
 func (config VolumesSnapshotConfig) Key() string {
@@ -279,11 +278,17 @@ func (config VolumesSnapshotConfig) Key() string {
 }
 
 type VolumesSnapshotStatus struct {
+	// SnapshotID is the ID of the snapshot
 	SnapshotID string
 	// Metadata is a map of volumeID to metadata, depending on the volume type
 	VolumeSnapshotMeta map[uuid.UUID]interface{}
-	TimeCreated        time.Time
-	AppUUID            uuid.UUID
+	// TimeCreated is the time the snapshot was created, reported by FS-specific code
+	TimeCreated time.Time
+	// AppUUID used as a backlink to the app
+	AppUUID uuid.UUID
+	// UsageCount is the number of users of this snapshot
+	UsageCount uint
+	// ErrorAndTimeWithSource provides SetErrorNow() and ClearError()
 	ErrorAndTimeWithSource
 }
 
