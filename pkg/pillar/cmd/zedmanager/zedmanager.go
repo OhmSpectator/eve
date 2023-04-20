@@ -414,9 +414,13 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 }
 
 func handleVolumesSnapshotStatusCreate(ctx interface{}, key string, status interface{}) {
-	log.Noticef("handleVolumesSnapshotStatusCreate")
+	log.Noticef("@ohm: handleVolumesSnapshotStatusCreate")
 	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
 	zedmanagerCtx := ctx.(*zedmanagerContext)
+	if volumesSnapshotStatus.HasError() {
+		log.Errorf("Failed to create snapshot %s: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
+		return
+	}
 	log.Functionf("Snapshot %s created", volumesSnapshotStatus.SnapshotID)
 	appInstanceStatus := lookupAppInstanceStatus(zedmanagerCtx, volumesSnapshotStatus.AppUUID.String())
 	if appInstanceStatus == nil {
@@ -463,13 +467,27 @@ func removeSnapshotFromList(snapshotStatuses []types.SnapshotStatus, id string) 
 
 func handleVolumesSnapshotStatusModify(ctx interface{}, key string, status interface{}, status2 interface{}) {
 	log.Noticef("handleVolumesSnapshotStatusModify")
-	log.Errorf("@ohm: handleVolumesSnapshotStatusModify: Not implemented yet")
+	log.Errorf("@ohm: handleVolumesSnapshotStatusModify: %s", key)
 	// Reaction to a snapshot rollback
 	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
 	zedmanagerCtx := ctx.(*zedmanagerContext)
+	if volumesSnapshotStatus.HasError() {
+		log.Errorf("Snapshot %s failed: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
+	}
 	appInstanceStatus := lookupAppInstanceStatus(zedmanagerCtx, volumesSnapshotStatus.AppUUID.String())
 	if appInstanceStatus == nil {
 		log.Errorf("handleVolumesSnapshotStatusModify: AppInstanceStatus not found for %s", volumesSnapshotStatus.AppUUID.String())
+		return
+	}
+	if volumesSnapshotStatus.HasError() {
+		log.Errorf("@ohm: Snapshot %s failed: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
+		availableSnapshot := lookupSnapshotStatusFromAvailable(appInstanceStatus, volumesSnapshotStatus.SnapshotID)
+		if availableSnapshot != nil {
+			log.Errorf("@ohm: setting error in availableSnapshot")
+			availableSnapshot.Error = volumesSnapshotStatus.Error
+		}
+		appInstanceStatus.ErrorAndTimeWithSource.SetErrorWithSourceAndDescription(volumesSnapshotStatus.ErrorDescription, volumesSnapshotStatus.ErrorSourceType)
+		publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 		return
 	}
 	err := restoreAndApplyConfigFromSnapshot(zedmanagerCtx, volumesSnapshotStatus)
@@ -477,6 +495,16 @@ func handleVolumesSnapshotStatusModify(ctx interface{}, key string, status inter
 		log.Errorf("handleVolumesSnapshotStatusModify: restoreAndApplyConfigFromSnapshot failed: %s", err)
 	}
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
+}
+
+func lookupSnapshotStatusFromAvailable(status *types.AppInstanceStatus, id string) *types.SnapshotStatus {
+	log.Noticef("lookupSnapshotStatusFromAvailable")
+	for _, snap := range status.AvailableSnapshots {
+		if snap.Snapshot.SnapshotID == id {
+			return &snap
+		}
+	}
+	return nil
 }
 
 func restoreAndApplyConfigFromSnapshot(ctx *zedmanagerContext, status types.VolumesSnapshotStatus) error {
@@ -912,6 +940,8 @@ func handleModify(ctxArg interface{}, key string,
 	log.Functionf("handleModify(%v) for %s",
 		config.UUIDandVersion, config.DisplayName)
 
+	log.Errorf("@ohm: diff: %s", cmp.Diff(oldConfig, config))
+
 	status.StartTime = ctx.delayBaseTime.Add(config.Delay)
 
 	snapshotsToBeDeleted := updateSnapshotInfoInAppStatus(status, config)
@@ -954,12 +984,20 @@ func handleModify(ctxArg interface{}, key string,
 			log.Errorf("handleModify(%v) for %s: error saving old config for snapshots: %v",
 				config.UUIDandVersion, config.DisplayName, err)
 		}
+		// Save the list of the volumes that need to be snapshotted
+		status.SnapshotsToBeTriggered = createVolumesSnapshotConfigs(oldConfig, status)
+		for _, snapshotToBeTriggered := range status.SnapshotsToBeTriggered {
+			log.Noticef("@ohm: For snapshot %s backup volumes:", snapshotToBeTriggered.SnapshotID)
+			for _, volume := range snapshotToBeTriggered.VolumeIDs {
+				log.Noticef("@ohm:\t%s", volume)
+			}
+		}
 	} else {
 		status.UpgradeInProgress = false
 	}
 
-	if config.RestartCmd.Counter != oldConfig.RestartCmd.Counter ||
-		config.LocalRestartCmd.Counter != oldConfig.LocalRestartCmd.Counter {
+	if config.RestartCmd.Counter > oldConfig.RestartCmd.Counter ||
+		config.LocalRestartCmd.Counter > oldConfig.LocalRestartCmd.Counter {
 
 		log.Functionf("handleModify(%v) for %s restartcmd from %d/%d to %d/%d "+
 			"needRestart: %v",
@@ -997,6 +1035,10 @@ func handleModify(ctxArg interface{}, key string,
 			oldConfig.PurgeCmd.Counter, oldConfig.LocalPurgeCmd.Counter,
 			config.PurgeCmd.Counter, config.LocalPurgeCmd.Counter,
 			needPurge)
+		log.Errorf("@ohm: handleModify: purgecmd from %d/%d to %d/%d needPurge: %v",
+			oldConfig.PurgeCmd.Counter, oldConfig.LocalPurgeCmd.Counter,
+			config.PurgeCmd.Counter, config.LocalPurgeCmd.Counter,
+			needPurge)
 		if status.IsErrorSource(types.AppInstanceStatus{}) {
 			log.Functionf("Removing error %s", status.Error)
 			status.ClearErrorWithSource()
@@ -1014,7 +1056,7 @@ func handleModify(ctxArg interface{}, key string,
 		return
 	}
 
-	if config.Snapshot.RollbackCmd.Counter != oldConfig.Snapshot.RollbackCmd.Counter {
+	if config.Snapshot.RollbackCmd.Counter > oldConfig.Snapshot.RollbackCmd.Counter {
 		log.Functionf("handleModify(%v) for %s: Snapshot to be rolled back: %v",
 			config.UUIDandVersion, config.DisplayName, config.Snapshot.ActiveSnapshot)
 		// Mark the VM to be rebooted
@@ -1022,11 +1064,14 @@ func handleModify(ctxArg interface{}, key string,
 		status.State = types.RESTARTING
 		status.RestartStartedAt = time.Now()
 		status.RollbackInProgress = true
-		publishAppInstanceStatus(ctx, status)
+		//publishAppInstanceStatus(ctx, status)
 	}
 
+	log.Errorf("@ohm: handleModify: change version in Status from %s to %s", status.UUIDandVersion.Version, config.UUIDandVersion.Version)
 	status.UUIDandVersion = config.UUIDandVersion
+	log.Errorf("@ohm: handleModify: new version in Status to publish %s", status.UUIDandVersion.Version)
 	publishAppInstanceStatus(ctx, status)
+	log.Errorf("@ohm: handleModify: new version in Status published %s", status.UUIDandVersion.Version)
 
 	changed := doUpdate(ctx, config, status)
 	if changed {
@@ -1263,6 +1308,7 @@ func handleDelete(ctx *zedmanagerContext, key string,
 	log.Functionf("handleDelete(%v) for %s",
 		status.UUIDandVersion, status.DisplayName)
 
+	log.Noticef("@ohm: handleDelete: Deleting %s, removeAIStatus", status.DisplayName)
 	removeAIStatus(ctx, status)
 	// Remove the recorded PurgeCmd Counter
 	mapKey := types.UuidToNumKey{UUID: status.UUIDandVersion.UUID}
@@ -1361,6 +1407,8 @@ func quantifyChanges(config types.AppInstanceConfig, oldConfig types.AppInstance
 	}
 	log.Functionf("quantifyChanges for %s %s returns %v, %v",
 		config.Key(), config.DisplayName, needPurge, needRestart)
+	log.Errorf("@ohm: needPurge: %v, needRestart: %v, purgeReason: %s, restartReason: %s",
+		needPurge, needRestart, purgeReason, restartReason)
 	return needPurge, needRestart, purgeReason, restartReason
 }
 
@@ -1482,6 +1530,7 @@ func updateBasedOnProfile(ctx *zedmanagerContext, oldProfile string) {
 		if status != nil {
 			log.Functionf("updateBasedOnProfile: change activate state for %s from %t to %t",
 				config.Key(), effectiveActivateOld, effectiveActivate)
+			log.Errorf("@ohm: config version %s, status version %s", config.UUIDandVersion.Version, status.UUIDandVersion.Version)
 			if doUpdate(ctx, config, status) {
 				publishAppInstanceStatus(ctx, status)
 			}

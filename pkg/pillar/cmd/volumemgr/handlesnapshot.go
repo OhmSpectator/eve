@@ -4,6 +4,7 @@
 package volumemgr
 
 import (
+	"fmt"
 	"github.com/lf-edge/eve/pkg/pillar/types"
 	"github.com/lf-edge/eve/pkg/pillar/volumehandlers"
 	"github.com/satori/go.uuid"
@@ -38,8 +39,12 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 	for _, volumeID := range config.VolumeIDs {
 		volumeStatus := ctx.lookupVolumeStatusByUUID(volumeID)
 		if volumeStatus == nil {
-			log.Errorf("handleVolumesSnapshotCreate: volume %s not found", volumeID.String())
-			// TODO Set the error in the status, clean the snapshotStatus
+			errText := fmt.Sprintf("handleVolumesSnapshotCreate: volume %s not found", volumeID.String())
+			log.Errorf(errText)
+			errDescription := types.ErrorDescription{Error: errText}
+			snapshotStatus.SetErrorWithSourceAndDescription(errDescription, types.VolumesSnapshotStatus{})
+			publishVolumesSnapshotStatus(ctx, snapshotStatus)
+			return
 		}
 		log.Errorf("@ohm: handleVolumesSnapshotCreate: volume %s found %s", volumeID.String(), volumeStatus.FileLocation)
 		snapshotMeta, timeCreated, err := createVolumeSnapshot(ctx, volumeStatus)
@@ -122,9 +127,11 @@ func rollbackToSnapshot(ctx *volumemgrContext, status *types.VolumeStatus, meta 
 	err := volumeHandlers.RollbackToSnapshot(meta)
 	if err != nil {
 		log.Errorf("rollbackToSnapshot: failed to rollback to snapshot for %s, %s", status.VolumeID.String(), err.Error())
+		log.Errorf("@ohm: rollbackToSnapshot: failed to rollback to snapshot for %s, %s", status.VolumeID.String(), err.Error())
 		// TODO Set the error in the status
 		return err
 	}
+	log.Errorf("@ohm: rollbackToSnapshot: success")
 	return nil
 }
 
