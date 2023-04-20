@@ -111,6 +111,7 @@ func handleVolumeRefDelete(ctxArg interface{}, key string,
 	log.Functionf("handleVolumeRefDelete(%s)", key)
 	config := configArg.(types.VolumeRefConfig)
 	ctx := ctxArg.(*volumemgrContext)
+	log.Noticef("handleVolumeRefDelete for %s", config.VolumeID.String())
 	unpublishVolumeRefStatus(ctx, config.Key())
 	vs := ctx.LookupVolumeStatus(config.VolumeKey())
 	if vs != nil {
