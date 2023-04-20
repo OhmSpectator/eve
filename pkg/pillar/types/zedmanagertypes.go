@@ -85,6 +85,7 @@ type SnapshotStatus struct {
 	TimeCreated   time.Time      // Time when the snapshot was created
 	AppInstanceID uuid.UUID      // UUID of the app instance
 	ConfigVersion UUIDandVersion // Version of the app instance config
+	Error         string         // Error if the snapshot rollback failed
 }
 
 // SnapshotConfig configuration of the snapshot handling for the app instance
@@ -252,7 +253,10 @@ type AppInstanceStatus struct {
 	// SnapshotsToBeTaken contains the list of snapshots to be taken for the app instance.
 	SnapshotsToBeTaken []SnapshotStatus
 	// MaxSnapshots indicates the maximum number of snapshots to be kept for the app instance.
-	MaxSnapshots       uint32
+	MaxSnapshots uint32
+	// SnapshotsToBeTriggered contains the list of snapshots to be triggered for the app instance.
+	SnapshotsToBeTriggered []VolumesSnapshotConfig
+	// RollbackInProgress indicates whether a rollback is in progress for the app instance.
 	RollbackInProgress bool
 }
 
@@ -345,6 +349,23 @@ const (
 	RecreateVolumes
 	BringUp
 )
+
+func (i Inprogress) String() string {
+	switch i {
+	case NotInprogress:
+		return "NotInprogress"
+	case DownloadAndVerify:
+		return "DownloadAndVerify"
+	case BringDown:
+		return "BringDown"
+	case RecreateVolumes:
+		return "RecreateVolumes"
+	case BringUp:
+		return "BringUp"
+	default:
+		return fmt.Sprintf("Unknown Inprogress %d", i)
+	}
+}
 
 func (status AppInstanceStatus) Key() string {
 	return status.UUIDandVersion.UUID.String()

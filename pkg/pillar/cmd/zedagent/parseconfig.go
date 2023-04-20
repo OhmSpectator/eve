@@ -1624,6 +1624,7 @@ func parseVolumeRefList(volumeRefConfigList []types.VolumeRefConfig,
 	for _, volumeRef := range volumeRefs {
 		volume := new(types.VolumeRefConfig)
 		volume.VolumeID, _ = uuid.FromString(volumeRef.Uuid)
+		log.Errorf("@ohm: parseVolumeRefList: VolumeID %s", volume.VolumeID.String())
 		volume.GenerationCounter = volumeRef.GenerationCount
 		volume.RefCount = 1
 		volume.MountDir = volumeRef.GetMountDir()

@@ -210,6 +210,7 @@ func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, time.Time, erro
 }
 
 func (handler *volumeHandlerFile) RollbackToSnapshot(snapshotMeta interface{}) error {
+	handler.log.Errorf("@ohm: RollbackToSnapshot, File")
 	snapshotFile, ok := snapshotMeta.(string)
 	if !ok {
 		errStr := fmt.Sprintf("RollbackToSnapshot: snapshotMeta is not a string")
