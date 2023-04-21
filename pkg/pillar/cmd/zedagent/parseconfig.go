@@ -555,16 +555,18 @@ func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 		}
 		cfgApp.Snapshot = &zconfig.SnapshotConfig{
 			MaxSnapshots: 1,
-			Snapshots:    make([]*zconfig.SnapshotDesc, 1),
+		}
+		if activeSnapshot != uuid.Nil && testCounter < 5 {
+			cfgApp.Snapshot.Snapshots = make([]*zconfig.SnapshotDesc, 1)
+			cfgApp.Snapshot.Snapshots[0] = &zconfig.SnapshotDesc{
+				Id:   testSnapshot.String(),
+				Type: zconfig.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE,
+			}
 		}
 		if activeSnapshot != uuid.Nil && testCounter >= 4 {
 			cfgApp.Snapshot.RollbackCmd = new(zconfig.InstanceOpsCmd)
 			cfgApp.Snapshot.ActiveSnapshot = activeSnapshot.String()
-			cfgApp.Snapshot.RollbackCmd.Counter = 241
-		}
-		cfgApp.Snapshot.Snapshots[0] = &zconfig.SnapshotDesc{
-			Id:   testSnapshot.String(),
-			Type: zconfig.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE,
+			cfgApp.Snapshot.RollbackCmd.Counter = 1
 		}
 
 		// Parse the snapshot related fields
