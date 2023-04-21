@@ -520,6 +520,7 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	subVolumesSnapshotConfig, err := ps.NewSubscription(pubsub.SubscriptionOptions{
 		CreateHandler: handleVolumesSnapshotCreate,
 		ModifyHandler: handleVolumesSnapshotModify,
+		DeleteHandler: handleVolumesSnapshotDelete,
 		WarningTime:   warningTime,
 		ErrorTime:     errorTime,
 		AgentName:     "zedmanager",
