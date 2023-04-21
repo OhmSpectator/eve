@@ -245,7 +245,6 @@ const (
 	VolumesSnapshotUnspecifiedAction VolumesSnapshotAction = iota
 	VolumesSnapshotCreate
 	VolumesSnapshotRollback
-	VolumesSnapshotDelete
 )
 
 func (action VolumesSnapshotAction) String() string {
@@ -254,8 +253,6 @@ func (action VolumesSnapshotAction) String() string {
 		return "Create"
 	case VolumesSnapshotRollback:
 		return "Rollback"
-	case VolumesSnapshotDelete:
-		return "Delete"
 	default:
 		return "Unspecified"
 	}
@@ -282,12 +279,14 @@ type VolumesSnapshotStatus struct {
 	SnapshotID string
 	// Metadata is a map of volumeID to metadata, depending on the volume type
 	VolumeSnapshotMeta map[uuid.UUID]interface{}
+	// VolumeHandler is a map of volumeID to volume handler
+	// This is used to perform the snapshot deletion in the case the base volume does not exist anymore
+	// XXX How to make it of the right type, not interface{}?
+	VolumeHandler map[uuid.UUID]interface{}
 	// TimeCreated is the time the snapshot was created, reported by FS-specific code
 	TimeCreated time.Time
 	// AppUUID used as a backlink to the app
 	AppUUID uuid.UUID
-	// UsageCount is the number of users of this snapshot
-	UsageCount uint
 	// ErrorAndTimeWithSource provides SetErrorNow() and ClearError()
 	ErrorAndTimeWithSource
 }

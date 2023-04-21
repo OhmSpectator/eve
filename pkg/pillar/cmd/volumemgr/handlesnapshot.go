@@ -33,6 +33,7 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 		SnapshotID: config.SnapshotID,
 		// Save the config UUID and version, so it can be reported later to the controller during the rollback
 		VolumeSnapshotMeta: make(map[uuid.UUID]interface{}, len(config.VolumeIDs)),
+		VolumeHandler:      make(map[uuid.UUID]interface{}, len(config.VolumeIDs)),
 		AppUUID:            config.AppUUID,
 	}
 	// Find the corresponding volume status
@@ -53,9 +54,10 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 			// TODO Set the error in the status
 		}
 		snapshotStatus.VolumeSnapshotMeta[volumeID] = snapshotMeta
+		snapshotStatus.VolumeHandler[volumeID] = volumehandlers.GetVolumeHandler(log, ctx, volumeStatus)
 		snapshotStatus.TimeCreated = timeCreated
 	}
-	log.Errorf("@ohm: handleVolumesSnapshotCreate: snapshotStatus %v", snapshotStatus)
+	log.Noticef("handleVolumesSnapshotCreate: successfully created snapshot %s", config.SnapshotID)
 	publishVolumesSnapshotStatus(ctx, snapshotStatus)
 }
 
@@ -74,7 +76,7 @@ func handleVolumesSnapshotModify(ctxArg interface{}, key string, configArg, _ in
 	config := configArg.(types.VolumesSnapshotConfig)
 	log.Functionf("handleVolumesSnapshotModify(%s) handles %s", key, config.Action)
 	log.Errorf("@ohm: handleVolumesSnapshotModify: %s handles %s", key, config.Action)
-	if config.Action != types.VolumesSnapshotRollback && config.Action != types.VolumesSnapshotDelete {
+	if config.Action != types.VolumesSnapshotRollback {
 		log.Errorf("handleVolumesSnapshotModify: unexpected action %s", config.Action)
 		// TODO Set the error in the status
 		return
@@ -93,31 +95,15 @@ func handleVolumesSnapshotModify(ctxArg interface{}, key string, configArg, _ in
 			// TODO Set the error in the status
 			return
 		}
-		switch config.Action {
-		case types.VolumesSnapshotRollback:
-			err := rollbackToSnapshot(ctx, volumeStatus, snapMeta)
-			if err != nil {
-				log.Errorf("Failed to rollback to snapshot with ID %s, %s", config.SnapshotID, err.Error())
-				return
-				// TODO Set the error in the status
-			}
-			// To trigger the modify event upon publishing, the usage count should be incremented
-			snapshotStatus.UsageCount++
-			publishVolumesSnapshotStatus(ctx, snapshotStatus)
-		case types.VolumesSnapshotDelete:
-			err := deleteSnapshot(ctx, volumeStatus, snapMeta)
-			if err != nil {
-				log.Errorf("Failed to delete snapshot with ID %s, %s", config.SnapshotID, err.Error())
-				// TODO Set the error in the status
-			}
-			unpublishVolumesSnapshotStatus(ctx, snapshotStatus)
-		default:
-			log.Errorf("handleVolumesSnapshotModify: unexpected action %s", config.Action)
+		err := rollbackToSnapshot(ctx, volumeStatus, snapMeta)
+		if err != nil {
+			log.Errorf("Failed to rollback to snapshot with ID %s, %s", config.SnapshotID, err.Error())
 			return
+			// TODO Set the error in the status
 		}
-
 	}
-	log.Functionf("handleVolumesSnapshotConfigImpl(%s) done", key)
+	publishVolumesSnapshotStatus(ctx, snapshotStatus)
+	log.Noticef("handleVolumesSnapshotModify: successfully rolled back to snapshot %s", config.SnapshotID)
 }
 
 func rollbackToSnapshot(ctx *volumemgrContext, status *types.VolumeStatus, meta interface{}) error {
@@ -135,11 +121,10 @@ func rollbackToSnapshot(ctx *volumemgrContext, status *types.VolumeStatus, meta 
 	return nil
 }
 
-func deleteSnapshot(ctx *volumemgrContext, status *types.VolumeStatus, meta interface{}) error {
-	volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, status)
+func deleteSnapshot(volumeHandlers volumehandlers.VolumeHandler, meta interface{}) error {
 	err := volumeHandlers.DeleteSnapshot(meta)
 	if err != nil {
-		log.Errorf("deleteSnapshot: failed to delete snapshot for %s, %s", status.VolumeID.String(), err.Error())
+		log.Errorf("deleteSnapshot: failed to delete snapshot")
 		// TODO Set the error in the status
 		return err
 	}
@@ -157,7 +142,6 @@ func unpublishVolumesSnapshotStatus(ctx *volumemgrContext, status *types.Volumes
 	key := status.Key()
 	log.Functionf("unpublishVolumesSnapshotStatus(%s)", key)
 	pub := ctx.pubVolumesSnapshotStatus
-	//_, _ = pub.Get(key)
 	pub.Unpublish(key)
 }
 
@@ -169,4 +153,22 @@ func lookupVolumesSnapshotStatus(ctx *volumemgrContext, key string) *types.Volum
 	}
 	status := st.(types.VolumesSnapshotStatus)
 	return &status
+}
+
+func handleVolumesSnapshotDelete(ctxArg interface{}, keyArg string, configArg interface{}) {
+	ctx := ctxArg.(*volumemgrContext)
+	config := configArg.(types.VolumesSnapshotConfig)
+	log.Noticef("handleVolumesSnapshotDelete(%s)", keyArg)
+	volumesSnapshotStatus := lookupVolumesSnapshotStatus(ctx, config.SnapshotID)
+	for volumeUUID, snapMeta := range volumesSnapshotStatus.VolumeSnapshotMeta {
+		volumeHandlers := volumesSnapshotStatus.VolumeHandler[volumeUUID].(volumehandlers.VolumeHandler)
+		err := deleteSnapshot(volumeHandlers, snapMeta)
+		if err != nil {
+			log.Errorf("Failed to delete snapshot with ID %s, %s", config.SnapshotID, err.Error())
+			// TODO Set the error in the status
+			return
+		}
+	}
+	unpublishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
+	log.Noticef("handleVolumesSnapshotDelete(%s) done", keyArg)
 }
