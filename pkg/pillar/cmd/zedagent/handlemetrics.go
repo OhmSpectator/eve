@@ -1210,6 +1210,11 @@ func PublishAppInfoToZedCloud(ctx *zedagentContext, uuid string,
 			snapInfo.Type = snap.Snapshot.SnapshotType.ConvertToInfoSnapshotType()
 			snapInfo.SnapErr = nil
 			ReportAppInfo.Snapshots = append(ReportAppInfo.Snapshots, snapInfo)
+			// Mark the snapshot as reported
+			//aiStatus.AvailableSnapshots[i].Reported = true
+			if !snap.Reported {
+				log.Noticef("@ohm: found not reported snapshot %s", snap.Snapshot.SnapshotID)
+			}
 		}
 
 		for _, snap := range ReportAppInfo.Snapshots {
