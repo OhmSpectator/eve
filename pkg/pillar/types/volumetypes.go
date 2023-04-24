@@ -278,11 +278,11 @@ type VolumesSnapshotStatus struct {
 	// SnapshotID is the ID of the snapshot
 	SnapshotID string
 	// Metadata is a map of volumeID to metadata, depending on the volume type
-	VolumeSnapshotMeta map[uuid.UUID]interface{}
+	VolumeSnapshotMeta map[string]interface{}
 	// VolumeHandler is a map of volumeID to volume handler
 	// This is used to perform the snapshot deletion in the case the base volume does not exist anymore
 	// XXX How to make it of the right type, not interface{}?
-	VolumeHandler map[uuid.UUID]interface{}
+	VolumeFormat map[string]zconfig.Format
 	// TimeCreated is the time the snapshot was created, reported by FS-specific code
 	TimeCreated time.Time
 	// AppUUID used as a backlink to the app
