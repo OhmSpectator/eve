@@ -6,6 +6,7 @@ package volumehandlers
 import (
 	"github.com/lf-edge/eve/pkg/pillar/base"
 	"github.com/lf-edge/eve/pkg/pillar/types"
+	"time"
 )
 
 // commonVolumeHandler stores common data and implements common functions
@@ -16,11 +17,13 @@ type commonVolumeHandler struct {
 	log           *base.LogObject
 }
 
-func (handler *commonVolumeHandler) CreateSnapshot() (string, error) { return "", nil }
+func (handler *commonVolumeHandler) CreateSnapshot() (interface{}, time.Time, error) {
+	return nil, time.Time{}, nil
+}
 
-func (handler *commonVolumeHandler) RollbackToSnapshot(snapshotID string) error { return nil }
+func (handler *commonVolumeHandler) RollbackToSnapshot(snapshotMeta interface{}) error { return nil }
 
-func (handler *commonVolumeHandler) DeleteSnapshot(snapshotID string) error { return nil }
+func (handler *commonVolumeHandler) DeleteSnapshot(snapshotMeta interface{}) error { return nil }
 
 func (handler *commonVolumeHandler) PrepareVolume() error { return nil }
 

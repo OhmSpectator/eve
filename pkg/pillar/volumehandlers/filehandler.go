@@ -206,6 +206,7 @@ func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, time.Time, erro
 	snapshotFile := ""
 	// Replace VolumeStatus with a new snapshot file
 	timeCreated := time.Now()
+	handler.log.Functionf("snapshotFile: %s, timeCreated: %s", snapshotFile, timeCreated)
 	return snapshotFile, timeCreated, nil
 }
 
