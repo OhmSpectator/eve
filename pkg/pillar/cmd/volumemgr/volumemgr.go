@@ -23,7 +23,6 @@ import (
 	"github.com/lf-edge/eve/pkg/pillar/utils"
 	"github.com/lf-edge/eve/pkg/pillar/vault"
 	"github.com/lf-edge/eve/pkg/pillar/worker"
-	uuid "github.com/satori/go.uuid"
 	"github.com/sirupsen/logrus"
 )
 
@@ -104,12 +103,12 @@ type volumemgrContext struct {
 	versionPtr *bool
 }
 
-func (ctxPtr *volumemgrContext) lookupVolumeStatusByUUID(id uuid.UUID) *types.VolumeStatus {
+func (ctxPtr *volumemgrContext) lookupVolumeStatusByUUID(id string) *types.VolumeStatus {
 	sub := ctxPtr.pubVolumeStatus
 	items := sub.GetAll()
 	for _, st := range items {
 		status := st.(types.VolumeStatus)
-		if status.VolumeID == id {
+		if status.VolumeID.String() == id {
 			return &status
 		}
 	}

@@ -601,6 +601,7 @@ func handleVolumesSnapshotStatusDelete(ctx interface{}, key string, status inter
 		log.Errorf("handleVolumesSnapshotStatusDelete: removeSnapshotFromAvailableSnapshots failed: %s", err)
 		return
 	}
+	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 }
 
 func removeSnapshotFromAvailableSnapshots(status *types.AppInstanceStatus, id string) error {
