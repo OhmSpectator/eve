@@ -243,23 +243,6 @@ func removeVolumesSnapshotConfig(snapshotsToBeTriggered []types.VolumesSnapshotC
 	return snapshotsToBeTriggered
 }
 
-func getVolumesInStatusNotInConfig(status *types.AppInstanceStatus, config types.AppInstanceConfig) []types.VolumeRefStatus {
-	var volumesInStatusNotInConfig []types.VolumeRefStatus
-	for _, volumeStatus := range status.VolumeRefStatusList {
-		volumeFound := false
-		for _, volumeConfig := range config.VolumeRefConfigList {
-			if volumeStatus.VolumeID == volumeConfig.VolumeID {
-				volumeFound = true
-				break
-			}
-		}
-		if !volumeFound {
-			volumesInStatusNotInConfig = append(volumesInStatusNotInConfig, volumeStatus)
-		}
-	}
-	return volumesInStatusNotInConfig
-}
-
 func triggerRollback(ctx *zedmanagerContext, config types.AppInstanceConfig, status *types.AppInstanceStatus) {
 	// Trigger Snapshot Rollback
 	// Find the snapshot config for the snapshot to be rolled back
@@ -270,13 +253,6 @@ func triggerRollback(ctx *zedmanagerContext, config types.AppInstanceConfig, sta
 	}
 	// Switch the action to rollback
 	volumesSnapshotConfig.Action = types.VolumesSnapshotRollback
-	/*
-		volumesSnapshotConfig := types.VolumesSnapshotConfig{
-			SnapshotID: config.Snapshot.ActiveSnapshot,
-			Action:     types.VolumesSnapshotRollback,
-			AppUUID:    config.UUIDandVersion.UUID,
-		}
-	*/
 	for _, volumeStatus := range status.VolumeRefStatusList {
 		log.Functionf("Adding volume %s to snapshot config", volumeStatus.VolumeID)
 		log.Errorf("@ohm: Adding volume %s to snapshot config", volumeStatus.VolumeID)
