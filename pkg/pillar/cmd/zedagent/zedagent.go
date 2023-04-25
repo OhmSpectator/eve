@@ -2022,7 +2022,6 @@ func handleAppInstanceStatusModify(ctxArg interface{}, key string,
 
 	status := statusArg.(types.AppInstanceStatus)
 	log.Functionf("handleAppInstanceStatusModify(%s)", key)
-	log.Errorf("@ohm: Get AppInstanceStatus with version %s", status.UUIDandVersion.Version)
 	ctx := ctxArg.(*zedagentContext)
 	uuidStr := status.Key()
 	PublishAppInfoToZedCloud(ctx, uuidStr, &status, ctx.assignableAdapters,
