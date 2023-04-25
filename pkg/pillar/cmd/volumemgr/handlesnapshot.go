@@ -14,18 +14,11 @@ import (
 func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg interface{}) {
 	ctx := ctxArg.(*volumemgrContext)
 	config := configArg.(types.VolumesSnapshotConfig)
-	log.Functionf("handleVolumesSnapshotCreate(%s) handles %s", key, config.Action)
-	log.Errorf("@ohm: : %s handles %s", key, config.Action)
-	if config.Action != types.VolumesSnapshotCreate {
-		log.Errorf("handleVolumesSnapshotCreate: unexpected action %s", config.Action)
-		// TODO Set the error in the status
-		return
-	}
+	log.Noticef("handleVolumesSnapshotCreate(%s) handles %s", key, config.Action)
 	// Check if snapshot snapshotStatus already exists, or it's a new snapshot request
 	snapshotStatus := lookupVolumesSnapshotStatus(ctx, config.SnapshotID)
 	if snapshotStatus != nil {
-		log.Errorf("handleVolumesSnapshotCreate: snapshot %s already exists", key)
-		// TODO How to handle this case?
+		log.Errorf("Snapshot %s already exists", config.SnapshotID)
 		return
 	}
 	// Create a new snapshotStatus
@@ -34,45 +27,58 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 		VolumeSnapshotMeta: make(map[string]interface{}, len(config.VolumeIDs)),
 		VolumeFormat:       make(map[string]zconfig.Format, len(config.VolumeIDs)),
 		AppUUID:            config.AppUUID,
+		StatusSetDuring:    types.VolumesSnapshotCreate,
 		// Save the config UUID and version, so it can be reported later to the controller during the rollback
+	}
+	if config.Action != types.VolumesSnapshotCreate {
+		errDesc := types.ErrorDescription{}
+		errDesc.Error = fmt.Sprintf("handleVolumesSnapshotCreate: unexpected action %s", config.Action)
+		log.Error(errDesc.Error)
+		snapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+		publishVolumesSnapshotStatus(ctx, snapshotStatus)
+		return
 	}
 	// Find the corresponding volume status
 	for _, volumeID := range config.VolumeIDs {
 		volumeStatus := ctx.lookupVolumeStatusByUUID(volumeID.String())
 		if volumeStatus == nil {
-			errText := fmt.Sprintf("handleVolumesSnapshotCreate: volume %s not found", volumeID.String())
-			log.Errorf(errText)
-			errDescription := types.ErrorDescription{Error: errText}
-			snapshotStatus.SetErrorWithSourceAndDescription(errDescription, types.VolumesSnapshotStatus{})
+			errDesc := types.ErrorDescription{}
+			errDesc.Error = fmt.Sprintf("handleVolumesSnapshotCreate: volume %s not found", volumeID.String())
+			log.Errorf(errDesc.Error)
+			snapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
 			publishVolumesSnapshotStatus(ctx, snapshotStatus)
 			return
 		}
-		log.Errorf("@ohm: handleVolumesSnapshotCreate: volume %s found %s", volumeID.String(), volumeStatus.FileLocation)
+		log.Noticef("handleVolumesSnapshotCreate: volume %s file found %s", volumeID.String(), volumeStatus.FileLocation)
 		snapshotMeta, timeCreated, err := createVolumeSnapshot(ctx, volumeStatus)
 		if err != nil {
-			log.Errorf("handleVolumesSnapshotCreate: failed to create volume snapshot for %s, %s", volumeID.String(), err.Error())
-			// TODO Set the error in the status
+			errDesc := types.ErrorDescription{}
+			errDesc.Error = fmt.Sprintf("handleVolumesSnapshotCreate: failed to create snapshot for %s, %s", volumeID.String(), err.Error())
+			log.Errorf(errDesc.Error)
+			snapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+			publishVolumesSnapshotStatus(ctx, snapshotStatus)
+			return
 		}
+		// Save the snapshot metadata (for example, snapshot file location), so later it can be used for rollback
 		snapshotStatus.VolumeSnapshotMeta[volumeID.String()] = snapshotMeta
+		// Save the volume format, so later can find the corresponding volume handler
 		snapshotStatus.VolumeFormat[volumeID.String()] = volumeStatus.ContentFormat
-
-		//log.Noticef("@ohm: the value of volumehandler (id %s) is %v", volumeID.String(), snapshotStatus.VolumeHandler[volumeID.String()])
-		//log.Noticef("@ohm: the new type of volumehandler (id %s) is %T", volumeID.String(), snapshotStatus.VolumeHandler[volumeID.String()])
+		// Save the time when the snapshot was created
 		snapshotStatus.TimeCreated = timeCreated
 	}
-	log.Noticef("handleVolumesSnapshotCreate: snapshot status %v", snapshotStatus)
 	log.Noticef("handleVolumesSnapshotCreate: successfully created snapshot %s", config.SnapshotID)
 	publishVolumesSnapshotStatus(ctx, snapshotStatus)
 }
 
 func createVolumeSnapshot(ctx *volumemgrContext, volumeStatus *types.VolumeStatus) (interface{}, time.Time, error) {
 	volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, volumeStatus)
+	log.Noticef("createVolumeSnapshot: create snapshot for %s", volumeStatus.VolumeID.String())
 	snapshotMeta, timeCreated, err := volumeHandlers.CreateSnapshot()
-	log.Noticef("snapshotMeta: %s, timeCreated: %v, err: %v", snapshotMeta.(string), timeCreated, err)
 	if err != nil {
 		log.Errorf("createVolumeSnapshot: failed to create snapshot for %s, %s", volumeStatus.VolumeID.String(), err.Error())
 		return "", timeCreated, err
 	}
+	log.Noticef("createVolumeSnapshot: successfully created snapshot for %s", volumeStatus.VolumeID.String())
 	return snapshotMeta, timeCreated, nil
 }
 
@@ -80,32 +86,45 @@ func handleVolumesSnapshotModify(ctxArg interface{}, key string, configArg, _ in
 	ctx := ctxArg.(*volumemgrContext)
 	config := configArg.(types.VolumesSnapshotConfig)
 	log.Functionf("handleVolumesSnapshotModify(%s) handles %s", key, config.Action)
-	log.Errorf("@ohm: handleVolumesSnapshotModify: %s handles %s", key, config.Action)
-	if config.Action != types.VolumesSnapshotRollback {
-		log.Errorf("handleVolumesSnapshotModify: unexpected action %s", config.Action)
-		// TODO Set the error in the status
-		return
-	}
 	// Check if snapshot status already exists, or it's a new snapshot request
 	volumesSnapshotStatus := lookupVolumesSnapshotStatus(ctx, config.SnapshotID)
 	if volumesSnapshotStatus == nil {
-		log.Errorf("handleVolumesSnapshotModify: snapshot %s not found", key)
-		// TODO How to handle this case?
+		// Create a new volumesSnapshotStatus to report an error
+		volumesSnapshotStatus = &types.VolumesSnapshotStatus{SnapshotID: config.SnapshotID, StatusSetDuring: types.VolumesSnapshotRollback}
+		errDesc := types.ErrorDescription{}
+		errDesc.Error = fmt.Sprintf("handleVolumesSnapshotModify: snapshot %s not found", key)
+		log.Error(errDesc.Error)
+		volumesSnapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+		publishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
 		return
 	}
-	log.Noticef("handleVolumesSnapshotModify: snapshot status %v", volumesSnapshotStatus)
+	volumesSnapshotStatus.StatusSetDuring = types.VolumesSnapshotRollback
+	if config.Action != types.VolumesSnapshotRollback {
+		errDesc := types.ErrorDescription{}
+		errDesc.Error = fmt.Sprintf("handleVolumesSnapshotModify: unexpected action %s", config.Action)
+		log.Error(errDesc.Error)
+		volumesSnapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+		publishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
+		return
+	}
 	for volumeID, snapMeta := range volumesSnapshotStatus.VolumeSnapshotMeta {
-		volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, &types.VolumeStatus{
-			ContentFormat: volumesSnapshotStatus.VolumeFormat[volumeID]})
+		// Create a temporary volume status, so it can be used to find the corresponding volume handler
+		tmpVolumeStatus := types.VolumeStatus{ContentFormat: volumesSnapshotStatus.VolumeFormat[volumeID]}
+		volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, &tmpVolumeStatus)
+		log.Noticef("handleVolumesSnapshotModify: rollback to snapshot %s for volume %s", config.SnapshotID, volumeID)
 		err := rollbackToSnapshot(volumeHandlers, snapMeta)
 		if err != nil {
-			log.Errorf("Failed to rollback to snapshot with ID %s, %s", config.SnapshotID, err.Error())
+			errDesc := types.ErrorDescription{}
+			errDesc.Error = fmt.Sprintf("Failed to rollback to snapshot %s for volume %s, %s", config.SnapshotID, volumeID, err.Error())
+			log.Error(errDesc.Error)
+			volumesSnapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+			publishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
 			return
-			// TODO Set the error in the status
 		}
+		log.Noticef("handleVolumesSnapshotModify: successfully rolled back to snapshot %s for volume %s", config.SnapshotID, volumeID)
 	}
-	publishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
 	log.Noticef("handleVolumesSnapshotModify: successfully rolled back to snapshot %s", config.SnapshotID)
+	publishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
 }
 
 func handleVolumesSnapshotDelete(ctxArg interface{}, keyArg string, configArg interface{}) {
@@ -114,46 +133,55 @@ func handleVolumesSnapshotDelete(ctxArg interface{}, keyArg string, configArg in
 	log.Noticef("handleVolumesSnapshotDelete(%s)", keyArg)
 	volumesSnapshotStatus := lookupVolumesSnapshotStatus(ctx, config.SnapshotID)
 	if volumesSnapshotStatus == nil {
-		log.Errorf("handleVolumesSnapshotDelete: snapshot status %s not found", keyArg)
-		// TODO How to handle this case?
+		// Create a new volumesSnapshotStatus to report an error
+		volumesSnapshotStatus = &types.VolumesSnapshotStatus{SnapshotID: config.SnapshotID, StatusSetDuring: types.VolumesSnapshotDelete}
+		errDesc := types.ErrorDescription{}
+		errDesc.Error = fmt.Sprintf("handleVolumesSnapshotDelete: snapshot %s not found", keyArg)
+		log.Error(errDesc.Error)
+		volumesSnapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+		publishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
 		return
 	}
-
-	log.Noticef("@ohm: volumesSnapshotStatus: %v", volumesSnapshotStatus)
-
+	volumesSnapshotStatus.StatusSetDuring = types.VolumesSnapshotDelete
 	for volumeUUID, snapMeta := range volumesSnapshotStatus.VolumeSnapshotMeta {
-		// Why is it not a VolumeHandler?
-		volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, &types.VolumeStatus{
-			ContentFormat: volumesSnapshotStatus.VolumeFormat[volumeUUID],
-		})
+		// Create a temporary volume status, so it can be used to find the corresponding volume handler
+		tmpVolumeStatus := types.VolumeStatus{ContentFormat: volumesSnapshotStatus.VolumeFormat[volumeUUID]}
+		volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, &tmpVolumeStatus)
+		log.Noticef("handleVolumesSnapshotDelete: delete snapshot %s for volume %s", config.SnapshotID, volumeUUID)
 		err := deleteSnapshot(volumeHandlers, snapMeta)
 		if err != nil {
-			log.Errorf("Failed to delete snapshot with ID %s, %s", config.SnapshotID, err.Error())
-			// TODO Set the error in the status
+			errDesc := types.ErrorDescription{}
+			errDesc.Error = fmt.Sprintf("Failed to delete snapshot %s for volume %s, %s", config.SnapshotID, volumeUUID, err.Error())
+			log.Error(errDesc.Error)
+			volumesSnapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+			publishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
 			return
 		}
+		log.Noticef("handleVolumesSnapshotDelete: successfully deleted snapshot %s for volume %s", config.SnapshotID, volumeUUID)
 	}
 	unpublishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
 	log.Noticef("handleVolumesSnapshotDelete(%s) done", keyArg)
 }
 
 func rollbackToSnapshot(volumeHandlers volumehandlers.VolumeHandler, meta interface{}) error {
+	log.Noticef("rollbackToSnapshot: rollback to snapshot")
 	err := volumeHandlers.RollbackToSnapshot(meta)
 	if err != nil {
 		log.Errorf("rollbackToSnapshot: failed to rollback to snapshot")
-		// TODO Set the error in the status
 		return err
 	}
+	log.Noticef("rollbackToSnapshot: successfully rolled back to snapshot")
 	return nil
 }
 
 func deleteSnapshot(volumeHandlers volumehandlers.VolumeHandler, meta interface{}) error {
+	log.Noticef("deleteSnapshot: delete snapshot")
 	err := volumeHandlers.DeleteSnapshot(meta)
 	if err != nil {
 		log.Errorf("deleteSnapshot: failed to delete snapshot")
-		// TODO Set the error in the status
 		return err
 	}
+	log.Noticef("deleteSnapshot: successfully deleted snapshot")
 	return nil
 }
 

@@ -245,6 +245,7 @@ const (
 	VolumesSnapshotUnspecifiedAction VolumesSnapshotAction = iota
 	VolumesSnapshotCreate
 	VolumesSnapshotRollback
+	VolumesSnapshotDelete
 )
 
 func (action VolumesSnapshotAction) String() string {
@@ -253,6 +254,8 @@ func (action VolumesSnapshotAction) String() string {
 		return "Create"
 	case VolumesSnapshotRollback:
 		return "Rollback"
+	case VolumesSnapshotDelete:
+		return "Delete"
 	default:
 		return "Unspecified"
 	}
@@ -287,6 +290,8 @@ type VolumesSnapshotStatus struct {
 	TimeCreated time.Time
 	// AppUUID used as a backlink to the app
 	AppUUID uuid.UUID
+	// StatusSetDuring is the action that set the status
+	StatusSetDuring VolumesSnapshotAction
 	// ErrorAndTimeWithSource provides SetErrorNow() and ClearError()
 	ErrorAndTimeWithSource
 }
