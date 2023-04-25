@@ -74,26 +74,43 @@ func (s SnapshotType) ConvertToInfoSnapshotType() info.SnapshotType {
 
 // SnapshotDesc a description of a snapshot instance
 type SnapshotDesc struct {
-	SnapshotID   string       // UUID of the snapshot
-	SnapshotType SnapshotType // Type of the snapshot creation trigger
+	// SnapshotID is the UUID of the snapshot
+	SnapshotID string
+	// SnapshotType is the type of the snapshot creation trigger
+	SnapshotType SnapshotType
 }
 
+// SnapshotStatus status of a snapshot instance. Used as a zedmanager-level representation of a snapshot
 type SnapshotStatus struct {
-	Snapshot      SnapshotDesc   // Description of the snapshot
-	Reported      bool           // True if the snapshot has been reported to the controller
-	TimeTriggered time.Time      // Time when the snapshot was requested
-	TimeCreated   time.Time      // Time when the snapshot was created
-	AppInstanceID uuid.UUID      // UUID of the app instance
-	ConfigVersion UUIDandVersion // Version of the app instance config
-	Error         string         // Error if the snapshot rollback failed
+	// Snapshot contains the snapshot description
+	Snapshot SnapshotDesc
+	// Reported indicates if the snapshot has been reported to the controller
+	Reported bool
+	// TimeTriggered is the time when the snapshot was triggered. At the moment, it is used to check if the snapshot has
+	// already been triggered. Later it can be used to order the snapshots for example in the case of choosing the
+	// snapshot to be deleted.
+	TimeTriggered time.Time
+	// TimeCreated is the time when the snapshot was created. It's reported by FS-specific snapshot creation code.
+	TimeCreated time.Time
+	// AppInstanceID is the UUID of the app instance the snapshot belongs to
+	AppInstanceID uuid.UUID
+	// ConfigVersion is the version of the app instance config at the moment of the snapshot creation
+	// It is reported to the controller, so it can use the proper config to roll back the app instance
+	ConfigVersion UUIDandVersion
+	// Error indicates if snapshot deletion or a rollback to the snapshot failed
+	Error string
 }
 
-// SnapshotConfig configuration of the snapshot handling for the app instance
+// SnapshotConfig configuration of the snapshot, coming from the controller
 type SnapshotConfig struct {
-	ActiveSnapshot string            // UUID of the active snapshot used by the app instance
-	MaxSnapshots   uint32            // Number of snapshots that may be created for the app instance
-	RollbackCmd    AppInstanceOpsCmd // Command to roll back the app instance to the active snapshot
-	Snapshots      []SnapshotDesc    // List of snapshots known to the controller at the moment
+	// ActiveSnapshot is the UUID of the snapshot requested by controller to be used for rollback
+	ActiveSnapshot string
+	// MaxSnapshots is the maximum number of snapshots allowed for the app instance
+	MaxSnapshots uint32
+	// RollbackCmd is the command to roll back the app instance to the active snapshot
+	RollbackCmd AppInstanceOpsCmd
+	// Snapshots is the list of snapshots known to the controller at the moment
+	Snapshots []SnapshotDesc
 }
 
 // This is what we assume will come from the ZedControl for each
