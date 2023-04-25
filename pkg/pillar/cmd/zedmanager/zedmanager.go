@@ -417,15 +417,25 @@ func handleVolumesSnapshotStatusCreate(ctx interface{}, key string, status inter
 	log.Noticef("handleVolumesSnapshotStatusCreate")
 	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
 	zedmanagerCtx := ctx.(*zedmanagerContext)
+	reportError := false
 	if volumesSnapshotStatus.HasError() {
-		log.Errorf("Failed to create snapshot %s: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
+		log.Errorf("Failed to handle snapshot %s: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
 		// Do not report error to controller, as it does not expect any result of snapshot creation rather that a success
+		if volumesSnapshotStatus.StatusSetDuring != types.VolumesSnapshotCreate {
+			reportError = true
+		}
 		return
 	}
 	log.Noticef("Snapshot %s created", volumesSnapshotStatus.SnapshotID)
 	appInstanceStatus := lookupAppInstanceStatus(zedmanagerCtx, volumesSnapshotStatus.AppUUID.String())
 	if appInstanceStatus == nil {
 		log.Errorf("handleVolumesSnapshotStatusCreate: AppInstanceStatus not found for %s", volumesSnapshotStatus.AppUUID.String())
+		return
+	}
+	if reportError {
+		appInstanceStatus.Error = volumesSnapshotStatus.Error
+		appInstanceStatus.ErrorTime = volumesSnapshotStatus.ErrorTime
+		publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 		return
 	}
 	moveSnapshotToAvailable(appInstanceStatus, volumesSnapshotStatus)
@@ -468,12 +478,20 @@ func handleVolumesSnapshotStatusModify(ctx interface{}, key string, status inter
 	// Reaction to a snapshot rollback
 	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
 	zedmanagerCtx := ctx.(*zedmanagerContext)
+	reportError := false
 	if volumesSnapshotStatus.HasError() {
+		reportError = true
 		log.Errorf("Snapshot %s failed: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
 	}
 	appInstanceStatus := lookupAppInstanceStatus(zedmanagerCtx, volumesSnapshotStatus.AppUUID.String())
 	if appInstanceStatus == nil {
 		log.Errorf("handleVolumesSnapshotStatusModify: AppInstanceStatus not found for %s", volumesSnapshotStatus.AppUUID.String())
+		return
+	}
+	if reportError {
+		appInstanceStatus.Error = volumesSnapshotStatus.Error
+		appInstanceStatus.ErrorTime = volumesSnapshotStatus.ErrorTime
+		publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 		return
 	}
 	if volumesSnapshotStatus.HasError() {
