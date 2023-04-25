@@ -1104,7 +1104,6 @@ func PublishAppInfoToZedCloud(ctx *zedagentContext, uuid string,
 
 	ReportAppInfo.AppID = uuid
 	ReportAppInfo.AppVersion = aiStatus.UUIDandVersion.Version
-	log.Errorf("@ohm: PublishAppInfoToZedCloud: appVersion: %v", ReportAppInfo.AppVersion)
 	ReportAppInfo.SystemApp = false
 	if aiStatus != nil {
 		ReportAppInfo.AppName = aiStatus.DisplayName
@@ -1210,16 +1209,6 @@ func PublishAppInfoToZedCloud(ctx *zedagentContext, uuid string,
 			snapInfo.Type = snap.Snapshot.SnapshotType.ConvertToInfoSnapshotType()
 			snapInfo.SnapErr = nil
 			ReportAppInfo.Snapshots = append(ReportAppInfo.Snapshots, snapInfo)
-			// Mark the snapshot as reported
-			//aiStatus.AvailableSnapshots[i].Reported = true
-			if !snap.Reported {
-				log.Noticef("@ohm: found not reported snapshot %s", snap.Snapshot.SnapshotID)
-			}
-		}
-
-		for _, snap := range ReportAppInfo.Snapshots {
-			log.Functionf("PublishAppInfoToZedCloud: snapshot %s", snap)
-			log.Errorf("@ohm: PublishAppInfoToZedCloud: snapshot %s", snap)
 		}
 	}
 

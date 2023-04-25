@@ -30,12 +30,11 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 	}
 	// Create a new snapshotStatus
 	snapshotStatus = &types.VolumesSnapshotStatus{
-		SnapshotID: config.SnapshotID,
-		// Save the config UUID and version, so it can be reported later to the controller during the rollback
-		// XXX Is it saved properly?
+		SnapshotID:         config.SnapshotID,
 		VolumeSnapshotMeta: make(map[string]interface{}, len(config.VolumeIDs)),
 		VolumeFormat:       make(map[string]zconfig.Format, len(config.VolumeIDs)),
 		AppUUID:            config.AppUUID,
+		// Save the config UUID and version, so it can be reported later to the controller during the rollback
 	}
 	// Find the corresponding volume status
 	for _, volumeID := range config.VolumeIDs {
