@@ -414,37 +414,32 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 }
 
 func handleVolumesSnapshotStatusCreate(ctx interface{}, key string, status interface{}) {
-	log.Noticef("@ohm: handleVolumesSnapshotStatusCreate")
+	log.Noticef("handleVolumesSnapshotStatusCreate")
 	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
 	zedmanagerCtx := ctx.(*zedmanagerContext)
 	if volumesSnapshotStatus.HasError() {
 		log.Errorf("Failed to create snapshot %s: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
+		// Do not report error to controller, as it does not expect any result of snapshot creation rather that a success
 		return
 	}
-	log.Functionf("Snapshot %s created", volumesSnapshotStatus.SnapshotID)
+	log.Noticef("Snapshot %s created", volumesSnapshotStatus.SnapshotID)
 	appInstanceStatus := lookupAppInstanceStatus(zedmanagerCtx, volumesSnapshotStatus.AppUUID.String())
 	if appInstanceStatus == nil {
 		log.Errorf("handleVolumesSnapshotStatusCreate: AppInstanceStatus not found for %s", volumesSnapshotStatus.AppUUID.String())
 		return
 	}
-	err := moveSnapshotToAvailable(appInstanceStatus, volumesSnapshotStatus)
-	if err != nil {
-		log.Errorf("handleVolumesSnapshotStatusCreate: moveSnapshotToAvailable failed: %s", err)
-	}
-	for _, snap := range appInstanceStatus.AvailableSnapshots {
-		log.Noticef("Available snapshot: %s, reported: %v", snap.Snapshot.SnapshotID, snap.Reported)
-	}
+	moveSnapshotToAvailable(appInstanceStatus, volumesSnapshotStatus)
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 }
 
-func moveSnapshotToAvailable(status *types.AppInstanceStatus, volumesSnapshotStatus types.VolumesSnapshotStatus) error {
+func moveSnapshotToAvailable(status *types.AppInstanceStatus, volumesSnapshotStatus types.VolumesSnapshotStatus) {
 	log.Noticef("moveSnapshotToAvailable")
 	var snapToBeMoved *types.SnapshotStatus
 	// Remove from SnapshotsToBeTaken
 	status.SnapshotsToBeTaken, snapToBeMoved = removeSnapshotFromList(status.SnapshotsToBeTaken, volumesSnapshotStatus.SnapshotID)
 	if snapToBeMoved == nil {
 		log.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus.SnapshotID)
-		return fmt.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus.SnapshotID)
+		return
 	}
 	// Update the time created from the volumesSnapshotStatus
 	snapToBeMoved.TimeCreated = volumesSnapshotStatus.TimeCreated
@@ -452,7 +447,7 @@ func moveSnapshotToAvailable(status *types.AppInstanceStatus, volumesSnapshotSta
 	snapToBeMoved.Reported = true
 	// Add to AvailableSnapshots
 	status.AvailableSnapshots = append(status.AvailableSnapshots, *snapToBeMoved)
-	return nil
+	log.Noticef("Snapshot %s moved to AvailableSnapshots", volumesSnapshotStatus.SnapshotID)
 }
 
 func removeSnapshotFromList(snapshotStatuses []types.SnapshotStatus, id string) ([]types.SnapshotStatus, *types.SnapshotStatus) {
@@ -470,7 +465,6 @@ func removeSnapshotFromList(snapshotStatuses []types.SnapshotStatus, id string) 
 
 func handleVolumesSnapshotStatusModify(ctx interface{}, key string, status interface{}, status2 interface{}) {
 	log.Noticef("handleVolumesSnapshotStatusModify")
-	log.Errorf("@ohm: handleVolumesSnapshotStatusModify: %s", key)
 	// Reaction to a snapshot rollback
 	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
 	zedmanagerCtx := ctx.(*zedmanagerContext)
@@ -483,10 +477,9 @@ func handleVolumesSnapshotStatusModify(ctx interface{}, key string, status inter
 		return
 	}
 	if volumesSnapshotStatus.HasError() {
-		log.Errorf("@ohm: Snapshot %s failed: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
+		log.Errorf("Snapshot handling %s failed: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
 		availableSnapshot := lookupSnapshotStatusFromAvailable(appInstanceStatus, volumesSnapshotStatus.SnapshotID)
 		if availableSnapshot != nil {
-			log.Errorf("@ohm: setting error in availableSnapshot")
 			availableSnapshot.Error = volumesSnapshotStatus.Error
 		}
 		appInstanceStatus.ErrorAndTimeWithSource.SetErrorWithSourceAndDescription(volumesSnapshotStatus.ErrorDescription, volumesSnapshotStatus.ErrorSourceType)
@@ -495,7 +488,11 @@ func handleVolumesSnapshotStatusModify(ctx interface{}, key string, status inter
 	}
 	err := restoreAndApplyConfigFromSnapshot(zedmanagerCtx, volumesSnapshotStatus)
 	if err != nil {
-		log.Errorf("handleVolumesSnapshotStatusModify: restoreAndApplyConfigFromSnapshot failed: %s", err)
+		errDesc := types.ErrorDescription{}
+		errDesc.Error = fmt.Sprintf("Failed to restore and apply config from snapshot %s: %s", volumesSnapshotStatus.SnapshotID, err)
+		log.Errorf(errDesc.Error)
+		errDesc.ErrorTime = time.Now()
+		appInstanceStatus.ErrorAndTimeWithSource.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
 	}
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 }
@@ -514,29 +511,27 @@ func restoreAndApplyConfigFromSnapshot(ctx *zedmanagerContext, status types.Volu
 	log.Noticef("restoreAndApplyConfigFromSnapshot")
 	appInstanceStatus := lookupAppInstanceStatus(ctx, status.AppUUID.String())
 	if appInstanceStatus == nil {
-		log.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceStatus not found for %s", status.AppUUID.String())
-		return fmt.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceStatus not found for %s", status.AppUUID.String())
+		return fmt.Errorf("AppInstanceStatus not found for %s", status.AppUUID.String())
 	}
 	// Get the snapshot status from the available snapshots
 	snapshotStatus := getSnapshotStatusFromAvailableSnapshots(appInstanceStatus, status.SnapshotID)
 	if snapshotStatus == nil {
-		log.Errorf("restoreAndApplyConfigFromSnapshot: SnapshotStatus not found for %s", status.SnapshotID)
-		return fmt.Errorf("restoreAndApplyConfigFromSnapshot: SnapshotStatus not found for %s", status.SnapshotID)
+		return fmt.Errorf("SnapshotStatus not found for %s", status.SnapshotID)
 	}
 	// Get the app instance config from the snapshot
 	snappedAppInstanceConfig := getAppInstanceConfigFromSnapshot(snapshotStatus)
 	if snappedAppInstanceConfig == nil {
-		log.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceConfig not found for %s", status.SnapshotID)
-		return fmt.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceConfig not found for %s", status.SnapshotID)
+		return fmt.Errorf("AppInstanceConfig not found for %s", status.SnapshotID)
 	}
 	// Get the app instance config from the app instance status
 	currentAppInstanceConfig := lookupAppInstanceConfig(ctx, appInstanceStatus.Key())
 	if currentAppInstanceConfig == nil {
-		log.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceConfig not found for %s", appInstanceStatus.Key())
-		return fmt.Errorf("restoreAndApplyConfigFromSnapshot: AppInstanceConfig not found for %s", appInstanceStatus.Key())
+		return fmt.Errorf("AppInstanceConfig not found for %s", appInstanceStatus.Key())
 	}
 	// Apply the app instance config from the snapshot
+	log.Noticef("Applying config (calling handleModify) from snapshot %s", status.SnapshotID)
 	handleModify(ctx, appInstanceStatus.Key(), *snappedAppInstanceConfig, *currentAppInstanceConfig)
+	log.Noticef("Config from snapshot %s applied", status.SnapshotID)
 	// Publish the app instance status
 	publishAppInstanceStatus(ctx, appInstanceStatus)
 	return nil
@@ -588,7 +583,6 @@ func getSnapshotStatusFromAvailableSnapshots(status *types.AppInstanceStatus, id
 
 func handleVolumesSnapshotStatusDelete(ctx interface{}, key string, status interface{}) {
 	log.Noticef("handleVolumesSnapshotStatusDelete")
-	log.Errorf("@ohm: handleVolumesSnapshotStatusDelete: Not implemented yet")
 	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
 	zedmanagerCtx := ctx.(*zedmanagerContext)
 	appInstanceStatus := lookupAppInstanceStatus(zedmanagerCtx, volumesSnapshotStatus.AppUUID.String())
@@ -598,8 +592,11 @@ func handleVolumesSnapshotStatusDelete(ctx interface{}, key string, status inter
 	}
 	err := removeSnapshotFromAvailableSnapshots(appInstanceStatus, volumesSnapshotStatus.SnapshotID)
 	if err != nil {
-		log.Errorf("handleVolumesSnapshotStatusDelete: removeSnapshotFromAvailableSnapshots failed: %s", err)
-		return
+		errDesc := types.ErrorDescription{}
+		errDesc.Error = fmt.Sprintf("Failed to remove snapshot %s from available snapshots: %s", volumesSnapshotStatus.SnapshotID, err)
+		log.Errorf(errDesc.Error)
+		errDesc.ErrorTime = time.Now()
+		appInstanceStatus.ErrorAndTimeWithSource.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
 	}
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 }
@@ -843,12 +840,8 @@ func handleCreate(ctxArg interface{}, key string,
 	// Calculate the moment when the application should start, taking into account the configured delay
 	status.StartTime = ctx.delayBaseTime.Add(config.Delay)
 
-	// Check if there is any during-the-update snapshot request for this app
+	// Ignore the return value (snapshot to be deleted) as it's the first time we're creating the app
 	_ = updateSnapshotInfoInAppStatus(&status, config)
-	log.Errorf("@ohm handleCreate(%v) for %s, snapshotOnUpgrade: %v, maxSnapshots: %d", config.UUIDandVersion, config.DisplayName, status.SnapshotOnUpgrade, status.MaxSnapshots)
-	for _, snap := range status.SnapshotsToBeTaken {
-		log.Errorf("@ohm: For %s, snapshot %s is to be taken", config.DisplayName, snap.Snapshot.SnapshotID)
-	}
 
 	// Do we have a PurgeCmd counter from before the reboot?
 	// Note that purgeCmdCounter is a sum of the remote and the local purge counter.
@@ -946,27 +939,20 @@ func handleModify(ctxArg interface{}, key string,
 	log.Functionf("handleModify(%v) for %s",
 		config.UUIDandVersion, config.DisplayName)
 
-	log.Errorf("@ohm: diff: %s", cmp.Diff(oldConfig, config))
-
 	status.StartTime = ctx.delayBaseTime.Add(config.Delay)
-
-	for _, snap := range status.AvailableSnapshots {
-		log.Errorf("@ohm: available snapshot %s (reported: %v)", snap.Snapshot.SnapshotID, snap.Reported)
-	}
 
 	snapshotsToBeDeleted := updateSnapshotInfoInAppStatus(status, config)
 	if len(snapshotsToBeDeleted) > 0 {
-		log.Noticef("@ohm: handleModify(%v) for %s: Snapshot to be deleted: %v",
-			config.UUIDandVersion, config.DisplayName, snapshotsToBeDeleted)
 		// Trigger Snapshot Deletion
 		for _, snapshot := range snapshotsToBeDeleted {
+			log.Noticef("Deleting snapshot %s", snapshot.SnapshotID)
 			volumesSnapshotConfig := lookupVolumesSnapshotConfig(ctx, snapshot.SnapshotID)
 			if volumesSnapshotConfig != nil {
 				// The snapshot has already been triggered, so we need to delete the config and notify volumemanager
-				log.Noticef("@ohm: handleModify(%v) for %s: Snapshot %s already triggered, deleting config",
-					config.UUIDandVersion, config.DisplayName, snapshot.SnapshotID)
+				log.Noticef("It has already been triggered, so deleting the config and notifying volumemanager")
 				unpublishVolumesSnapshotConfig(ctx, volumesSnapshotConfig)
 			}
+			log.Noticef("Deleting snapshot from the App status")
 			deleteSnapshotFromStatus(status, snapshot.SnapshotID)
 		}
 	}
@@ -996,15 +982,10 @@ func handleModify(ctxArg interface{}, key string,
 		if err != nil {
 			log.Errorf("handleModify(%v) for %s: error saving old config for snapshots: %v",
 				config.UUIDandVersion, config.DisplayName, err)
+			// Do not report it to the controller, as the controller do not expect snapshot-creation related errors
 		}
-		// Save the list of the volumes that need to be snapshotted
+		// Save the list of the volumes that need to be backed up
 		status.SnapshotsToBeTriggered = createVolumesSnapshotConfigs(oldConfig, status)
-		for _, snapshotToBeTriggered := range status.SnapshotsToBeTriggered {
-			log.Noticef("@ohm: For snapshot %s backup volumes:", snapshotToBeTriggered.SnapshotID)
-			for _, volume := range snapshotToBeTriggered.VolumeIDs {
-				log.Noticef("@ohm:\t%s", volume)
-			}
-		}
 	} else {
 		status.UpgradeInProgress = false
 	}
@@ -1048,10 +1029,6 @@ func handleModify(ctxArg interface{}, key string,
 			oldConfig.PurgeCmd.Counter, oldConfig.LocalPurgeCmd.Counter,
 			config.PurgeCmd.Counter, config.LocalPurgeCmd.Counter,
 			needPurge)
-		log.Errorf("@ohm: handleModify: purgecmd from %d/%d to %d/%d needPurge: %v",
-			oldConfig.PurgeCmd.Counter, oldConfig.LocalPurgeCmd.Counter,
-			config.PurgeCmd.Counter, config.LocalPurgeCmd.Counter,
-			needPurge)
 		if status.IsErrorSource(types.AppInstanceStatus{}) {
 			log.Functionf("Removing error %s", status.Error)
 			status.ClearErrorWithSource()
@@ -1080,11 +1057,8 @@ func handleModify(ctxArg interface{}, key string,
 		//publishAppInstanceStatus(ctx, status)
 	}
 
-	log.Errorf("@ohm: handleModify: change version in Status from %s to %s", status.UUIDandVersion.Version, config.UUIDandVersion.Version)
 	status.UUIDandVersion = config.UUIDandVersion
-	log.Errorf("@ohm: handleModify: new version in Status to publish %s", status.UUIDandVersion.Version)
 	publishAppInstanceStatus(ctx, status)
-	log.Errorf("@ohm: handleModify: new version in Status published %s", status.UUIDandVersion.Version)
 
 	changed := doUpdate(ctx, config, status)
 	if changed {
@@ -1183,7 +1157,7 @@ func updateSnapshotInfoInAppStatus(status *types.AppInstanceStatus, config types
 	// Check if we have reached the max number of snapshots and delete the oldest ones
 	snapshotsToBeDeleted, snapshotsToBeTaken = adjustToMaxSnapshots(status, snapshotsToBeDeleted, snapshotsToBeTaken)
 	for _, snapshot := range snapshotsToBeTaken {
-		log.Functionf("Adding snapshot %s to the list of snapshots to be taken, for %s", snapshot.SnapshotID, config.DisplayName)
+		log.Noticef("Adding snapshot %s to the list of snapshots to be taken, for %s", snapshot.SnapshotID, config.DisplayName)
 		newSnapshotStatus := types.SnapshotStatus{
 			Snapshot:      snapshot,
 			Reported:      false,
@@ -1206,7 +1180,7 @@ func unpublishVolumesSnapshotConfig(ctx *zedmanagerContext, t *types.VolumesSnap
 	key := t.Key()
 	log.Tracef("unpublishVolumesSnapshotConfig(%s)", key)
 	pub := ctx.pubVolumesSnapshotConfig
-	pub.Unpublish(key)
+	_ = pub.Unpublish(key)
 }
 
 func removeNUnpublishedSnapshotRequests(snapshots []types.SnapshotStatus, n uint32) ([]types.SnapshotStatus, uint32) {
@@ -1225,52 +1199,59 @@ func removeNUnpublishedSnapshotRequests(snapshots []types.SnapshotStatus, n uint
 
 // adjustToMaxSnapshots checks if the number of snapshots is more than the limit. If so, it flags the oldest snapshots for deletion.
 // If the number of snapshots is still more than the limit, it trims the list of snapshots to be taken to fit the limit.
+// The order of lists to be used for deletion is:
+// 1. Already available snapshots
+// 2. New snapshot requests
+// 3. Snapshots ready to be taken
 func adjustToMaxSnapshots(status *types.AppInstanceStatus, toBeDeleted []types.SnapshotDesc, newRequested []types.SnapshotDesc) ([]types.SnapshotDesc, []types.SnapshotDesc) {
 	// If the number of snapshots is less than the limit, then we do not need to delete any snapshots.
 	totalSnapshotsRequestedNum := uint32(len(status.AvailableSnapshots) + len(status.SnapshotsToBeTaken) + len(newRequested) - len(toBeDeleted))
 	if totalSnapshotsRequestedNum <= status.MaxSnapshots {
 		return toBeDeleted, newRequested
 	}
-	// If the number of snapshots is more than the limit, then we need to delete the oldest snapshots.
+	// If the number of snapshots is more than the limit, then we need to report a warning...
+	errDesc := types.ErrorDescription{}
+	errDesc.Error = fmt.Sprintf("Too many snapshots requested. Max allowed: %d", status.MaxSnapshots)
+	log.Warnf("adjustToMaxSnapshots: %s", errDesc.Error)
+	errDesc.ErrorTime = time.Now()
+	errDesc.ErrorSeverity = types.ErrorSeverityWarning
+	status.ErrorDescription = errDesc
+	// ... and to delete the oldest snapshots ...
+	log.Noticef("adjustToMaxSnapshots: Flagging available snapshots for deletion for %s", status.DisplayName)
 	snapshotsToBeDeletedNum := totalSnapshotsRequestedNum - status.MaxSnapshots
 	sortByTimeCreated(status.AvailableSnapshots)
-	for _, snap := range status.AvailableSnapshots {
-		if snapshotsToBeDeletedNum == 0 {
-			break
-		}
-		log.Functionf("adjustToMaxSnapshots: Flagging available snapshot %s for deletion for %s", snap.Snapshot, status.DisplayName)
-		toBeDeleted = append(toBeDeleted, snap.Snapshot)
+	for i := 0; i < len(status.AvailableSnapshots) && snapshotsToBeDeletedNum != 0; i++ {
+		log.Noticef("Flagging available snapshot %s for deletion", status.AvailableSnapshots[i].Snapshot.SnapshotID)
+		toBeDeleted = append(toBeDeleted, status.AvailableSnapshots[i].Snapshot)
 		snapshotsToBeDeletedNum--
 	}
-	// If we still have more snapshots to be deleted, then we need to delete the snapshots from the newRequested list.
-	if snapshotsToBeDeletedNum != 0 {
-		// Too many snapshots newRequested
-		log.Warnf("adjustToMaxSnapshots: Could not delete %d snapshots for %s", snapshotsToBeDeletedNum, status.DisplayName)
-		// Remove the snapshots from the newRequested list
-		if len(newRequested) < int(snapshotsToBeDeletedNum) {
-			log.Errorf("adjustToMaxSnapshots: Unexpected error. The number of snapshots to be deleted is more than the number of newRequested snapshots.")
-			status.SetError("Unexpected error. The number of snapshots to be deleted is more than the number of newRequested snapshots.", time.Now())
-		}
-		// Should we check, if the removed snaps are already taken into action?
-		newRequested = newRequested[:len(newRequested)-int(snapshotsToBeDeletedNum)]
-		// Report as a warning
-		errDesc := types.ErrorDescription{}
-		errDesc.Error = fmt.Sprintf("Too many snapshots requested. Max allowed: %d", status.MaxSnapshots)
+	if snapshotsToBeDeletedNum == 0 {
+		return toBeDeleted, newRequested
+	}
+
+	// ... if we still have snapshots to be deleted, we need to delete them from the requests list ...
+	requestsToBeDeleted := len(newRequested)
+	if int(snapshotsToBeDeletedNum) < requestsToBeDeleted {
+		requestsToBeDeleted = int(snapshotsToBeDeletedNum)
+	}
+	log.Noticef("Removing %d new snapshot requests for %s", requestsToBeDeleted, status.DisplayName)
+	newRequested = newRequested[:len(newRequested)-requestsToBeDeleted]
+	snapshotsToBeDeletedNum -= uint32(requestsToBeDeleted)
+	if snapshotsToBeDeletedNum == 0 {
+		return toBeDeleted, newRequested
+	}
+
+	// ... if we still have snapshots to be deleted, we need to delete the unpublished snapshots from the SnapshotsToBeTaken list.
+	var removed uint32
+	log.Functionf("Flagging planned but unpublished snapshots for deletion for %s", status.DisplayName)
+	status.SnapshotsToBeTaken, removed = removeNUnpublishedSnapshotRequests(status.SnapshotsToBeTaken, snapshotsToBeDeletedNum)
+	if removed != snapshotsToBeDeletedNum {
+		errDesc.Error = fmt.Sprintf("Unexpected error. The number of snapshots to be deleted is more than the number of all snapshots.")
+		log.Errorf("adjustToMaxSnapshots: %s", errDesc.Error)
 		errDesc.ErrorTime = time.Now()
 		errDesc.ErrorSeverity = types.ErrorSeverityWarning
 		status.ErrorDescription = errDesc
 	}
-	// If we still have more snapshots to be deleted, then we need to delete the unpublished snapshots from the SnapshotsToBeTaken list.
-	if snapshotsToBeDeletedNum != 0 {
-		var removed uint32
-		log.Functionf("adjustToMaxSnapshots: Flagging unpublished snapshots for deletion for %s", status.DisplayName)
-		status.SnapshotsToBeTaken, removed = removeNUnpublishedSnapshotRequests(status.SnapshotsToBeTaken, snapshotsToBeDeletedNum)
-		if removed != snapshotsToBeDeletedNum {
-			log.Errorf("adjustToMaxSnapshots: Unexpected error. The number of snapshots to be deleted is more than the number of unpublished snapshots.")
-			status.SetError("Unexpected error. The number of snapshots to be deleted is more than the number of unpublished snapshots.", time.Now())
-		}
-	}
-	log.Functionf("adjustToMaxSnapshots: Done for %s", status.DisplayName)
 	return toBeDeleted, newRequested
 }
 
@@ -1280,23 +1261,21 @@ func sortByTimeCreated(snapshots []types.SnapshotStatus) {
 	})
 }
 
-// getSnapshotsToBeDeleted returns the list of snapshots which are to be deleted.
+// getSnapshotsToBeDeleted returns the list of snapshots to be deleted
 func getSnapshotsToBeDeleted(config types.AppInstanceConfig, status *types.AppInstanceStatus) (snapsToBeDeleted []types.SnapshotDesc) {
-	// If the config has a list of snapshots, then we need to delete the ones which are not present in the config.
-	if config.Snapshot.Snapshots != nil {
-		for _, snap := range status.AvailableSnapshots {
-			if !isSnapshotPresent(snap.Snapshot, config.Snapshot.Snapshots) && snap.Reported {
+	configSnapshots := config.Snapshot.Snapshots
+	for _, snap := range status.AvailableSnapshots {
+		// Can mark a snapshot for deletion only if it is reported to the controller.
+		if snap.Reported {
+			// If the config has a list of snapshots, then we need to delete the ones which are not present in the config.
+			// If the config does not have a list of snapshots, then we need to delete all the reported snapshots.
+			shouldDelete := configSnapshots == nil || !isSnapshotPresent(snap.Snapshot, configSnapshots)
+			if shouldDelete {
+				log.Noticef("Flagging snapshot %s for deletion", snap.Snapshot.SnapshotID)
 				snapsToBeDeleted = append(snapsToBeDeleted, snap.Snapshot)
 			}
-		}
-		// If the config does not have a list of snapshots, then we need to delete all the reported snapshots.
-	} else {
-		for _, snap := range status.AvailableSnapshots {
-			if snap.Reported {
-				snapsToBeDeleted = append(snapsToBeDeleted, snap.Snapshot)
-			} else {
-				log.Noticef("@ohm: getSnapshotsToBeDeleted: Not deleting unpublished snapshot %s", snap.Snapshot.SnapshotID)
-			}
+		} else if configSnapshots == nil {
+			log.Noticef("Not deleting unpublished snapshot %s", snap.Snapshot.SnapshotID)
 		}
 	}
 	return snapsToBeDeleted
@@ -1321,6 +1300,7 @@ func getNewSnapshotRequests(config types.AppInstanceConfig, status *types.AppIns
 	if config.Snapshot.Snapshots != nil {
 		for _, snap := range config.Snapshot.Snapshots {
 			if isNewSnapshotRequest(snap, status) {
+				log.Noticef("A new snapshot %s is requested", snap.SnapshotID)
 				snapRequests = append(snapRequests, snap)
 			}
 		}
@@ -1328,8 +1308,8 @@ func getNewSnapshotRequests(config types.AppInstanceConfig, status *types.AppIns
 	return snapRequests
 }
 
-// isNewSnapshotRequest checks if the snapshot is already present at least in one of the lists
-// of snapshots to be taken or available snapshots.
+// isNewSnapshotRequest checks if the snapshot is already present at least in one of the lists:
+// the list of the snapshots to be taken or available snapshots.
 func isNewSnapshotRequest(snap types.SnapshotDesc, status *types.AppInstanceStatus) bool {
 	for _, snapToBeTaken := range status.SnapshotsToBeTaken {
 		if snapToBeTaken.Snapshot.SnapshotID == snap.SnapshotID {
@@ -1350,7 +1330,6 @@ func handleDelete(ctx *zedmanagerContext, key string,
 	log.Functionf("handleDelete(%v) for %s",
 		status.UUIDandVersion, status.DisplayName)
 
-	log.Noticef("@ohm: handleDelete: Deleting %s, removeAIStatus", status.DisplayName)
 	removeAIStatus(ctx, status)
 	// Remove the recorded PurgeCmd Counter
 	mapKey := types.UuidToNumKey{UUID: status.UUIDandVersion.UUID}
@@ -1449,8 +1428,6 @@ func quantifyChanges(config types.AppInstanceConfig, oldConfig types.AppInstance
 	}
 	log.Functionf("quantifyChanges for %s %s returns %v, %v",
 		config.Key(), config.DisplayName, needPurge, needRestart)
-	log.Errorf("@ohm: needPurge: %v, needRestart: %v, purgeReason: %s, restartReason: %s",
-		needPurge, needRestart, purgeReason, restartReason)
 	return needPurge, needRestart, purgeReason, restartReason
 }
 
@@ -1572,7 +1549,6 @@ func updateBasedOnProfile(ctx *zedmanagerContext, oldProfile string) {
 		if status != nil {
 			log.Functionf("updateBasedOnProfile: change activate state for %s from %t to %t",
 				config.Key(), effectiveActivateOld, effectiveActivate)
-			log.Errorf("@ohm: config version %s, status version %s", config.UUIDandVersion.Version, status.UUIDandVersion.Version)
 			if doUpdate(ctx, config, status) {
 				publishAppInstanceStatus(ctx, status)
 			}

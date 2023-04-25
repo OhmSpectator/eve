@@ -2224,7 +2224,6 @@ func handleModify(ctx *domainContext, key string,
 	if config.UUIDandVersion.Version == status.UUIDandVersion.Version {
 		log.Functionf("Same version %s for %s",
 			config.UUIDandVersion.Version, key)
-		log.Errorf("@ohm: handleModify: Same version %s for %s", config.UUIDandVersion.Version, key)
 		status.PendingModify = false
 		publishDomainStatus(ctx, status)
 		return
