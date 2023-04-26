@@ -102,3 +102,32 @@ func RolloutImgToBlock(ctx context.Context, log *base.LogObject, diskfile, outpu
 	}
 	return nil
 }
+
+// CreateSnapshotImage creates snapshot of diskfile with defined format and size
+func CreateSnapshotImage(ctx context.Context, log *base.LogObject, diskfile, snapshotFile, format string) error {
+	if _, err := os.Stat(diskfile); err != nil {
+		return err
+	}
+	output, err := base.Exec(log, "/usr/bin/qemu-img", "create", "-f", format, "-b", diskfile, "-F", format,
+		snapshotFile).WithContext(ctx).CombinedOutput()
+	if err != nil {
+		errStr := fmt.Sprintf("qemu-img failed: %s, %s\n",
+			err, output)
+		return errors.New(errStr)
+	}
+	return nil
+}
+
+func MergeSnapshotToBaseImage(ctx context.Context, log *base.LogObject, diskfile, snapshotFile string) error {
+	if _, err := os.Stat(diskfile); err != nil {
+		return err
+	}
+	output, err := base.Exec(log, "/usr/bin/qemu-img", "commit", "-f", "qcow2", "-p", "-b", snapshotFile,
+		diskfile).WithContext(ctx).CombinedOutput()
+	if err != nil {
+		errStr := fmt.Sprintf("qemu-img failed: %s, %s\n",
+			err, output)
+		return errors.New(errStr)
+	}
+	return nil
+}
