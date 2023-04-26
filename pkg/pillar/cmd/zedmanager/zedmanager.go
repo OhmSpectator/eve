@@ -616,6 +616,23 @@ func handleVolumesSnapshotStatusDelete(ctx interface{}, key string, status inter
 		errDesc.ErrorTime = time.Now()
 		appInstanceStatus.ErrorAndTimeWithSource.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
 	}
+	// Decrement the ref count for the volumes
+	volumesSnapshotConfig := lookupVolumesSnapshotConfig(zedmanagerCtx, volumesSnapshotStatus.Key())
+	for _, volume := range volumesSnapshotConfig.VolumeIDs {
+		// We can use the volume ID as the key for the volume status
+		// Works only if generation is not used (always 0)
+		tmpVolumeStatus := types.VolumeStatus{
+			VolumeID: volume,
+		}
+		volumeRefConfig := lookupVolumeRefConfig(zedmanagerCtx, tmpVolumeStatus.Key())
+		if volumeRefConfig == nil {
+			log.Errorf("handleVolumesSnapshotStatusDelete: VolumeRefConfig not found for %s", tmpVolumeStatus.Key())
+			continue
+		}
+		volumeRefConfig.RefCount--
+		// Publish the volume ref config, so it can be deleted if ref count is 0
+		publishVolumeRefConfig(zedmanagerCtx, volumeRefConfig)
+	}
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 }
 
@@ -1003,7 +1020,7 @@ func handleModify(ctxArg interface{}, key string,
 			// Do not report it to the controller, as the controller do not expect snapshot-creation related errors
 		}
 		// Save the list of the volumes that need to be backed up
-		status.SnapshotsToBeTriggered = createVolumesSnapshotConfigs(oldConfig, status)
+		status.SnapshotsToBeTriggered = createVolumesSnapshotConfigs(ctx, oldConfig, status)
 	} else {
 		status.UpgradeInProgress = false
 	}

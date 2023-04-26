@@ -182,7 +182,7 @@ func doUpdate(ctx *zedmanagerContext,
 }
 
 // We cannot create a volumesSnapshotConfig and trigger the snapshot here because the application is still running.
-func createVolumesSnapshotConfigs(config types.AppInstanceConfig, status *types.AppInstanceStatus) []types.VolumesSnapshotConfig {
+func createVolumesSnapshotConfigs(ctx *zedmanagerContext, config types.AppInstanceConfig, status *types.AppInstanceStatus) []types.VolumesSnapshotConfig {
 	var volumesSnapshotConfigList []types.VolumesSnapshotConfig
 	for _, snapshot := range status.SnapshotsToBeTaken {
 		if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate {
@@ -192,9 +192,12 @@ func createVolumesSnapshotConfigs(config types.AppInstanceConfig, status *types.
 				Action:     types.VolumesSnapshotCreate,
 				AppUUID:    status.UUIDandVersion.UUID,
 			}
-			for _, volumeStatus := range config.VolumeRefConfigList {
-				log.Noticef("Adding volume %s to volumesSnapshotConfig", volumeStatus.VolumeID)
-				volumesSnapshotConfig.VolumeIDs = append(volumesSnapshotConfig.VolumeIDs, volumeStatus.VolumeID)
+			for _, volumeRefConfig := range config.VolumeRefConfigList {
+				log.Noticef("Adding volume %s to volumesSnapshotConfig", volumeRefConfig.VolumeID)
+				volumesSnapshotConfig.VolumeIDs = append(volumesSnapshotConfig.VolumeIDs, volumeRefConfig.VolumeID)
+				// Increment the reference count for the volume, so it's not deleted when it's temporary not used by any application
+				volumeRefConfig.RefCount++
+				publishVolumeRefConfig(ctx, &volumeRefConfig)
 			}
 			volumesSnapshotConfigList = append(volumesSnapshotConfigList, volumesSnapshotConfig)
 		}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/lf-edge/eve/pkg/pillar/base"
 	"github.com/lf-edge/eve/pkg/pillar/types"
@@ -108,8 +109,9 @@ func CreateSnapshotImage(ctx context.Context, log *base.LogObject, diskfile, sna
 	if _, err := os.Stat(diskfile); err != nil {
 		return err
 	}
-	output, err := base.Exec(log, "/usr/bin/qemu-img", "create", "-f", format, "-b", diskfile, "-F", format,
-		snapshotFile).WithContext(ctx).CombinedOutput()
+	cmd := []string{"create", "-f", format, "-b", diskfile, "-F", format, snapshotFile}
+	log.Noticef("CreateSnapshotImage: /usr/bin/qemu-img %s", strings.Join(cmd, " "))
+	output, err := base.Exec(log, "/usr/bin/qemu-img", cmd...).WithContext(ctx).CombinedOutput()
 	if err != nil {
 		errStr := fmt.Sprintf("qemu-img failed: %s, %s\n",
 			err, output)
