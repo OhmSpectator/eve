@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lf-edge/eve/pkg/pillar/types"
 	"os"
 	"strings"
 	"time"
@@ -201,9 +202,15 @@ func (handler *volumeHandlerFile) maybeResizeDisk(ctx context.Context, diskfile 
 
 // CreateSnapshot creates a snapshot of the volume, returns snapshot file location as metadata
 func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, time.Time, error) {
-	// TODO: implement
 	handler.log.Functionf("CreateSnapshot for a file based volume (%s)", handler.status.FileLocation)
-	snapshotFile := ""
+	createSnapContext := context.Background()
+	snapshotFile := types.SnapshotsDirname + "/" + handler.status.Key() + ".snapshot"
+	baseImagFile := handler.status.FileLocation
+	if handler.status.ContentFormat != zconfig.Format_QCOW2 {
+		return "", time.Time{}, fmt.Errorf("CreateSnapshot: unsupported format %s", handler.status.ContentFormat.String())
+	}
+	format := handler.status.ContentFormat.String()
+	diskmetrics.CreateSnapshotImage(createSnapContext, handler.log, baseImagFile, snapshotFile, format)
 	// Replace VolumeStatus with a new snapshot file
 	timeCreated := time.Now()
 	handler.log.Functionf("snapshotFile: %s, timeCreated: %s", snapshotFile, timeCreated)
@@ -218,6 +225,7 @@ func (handler *volumeHandlerFile) RollbackToSnapshot(snapshotMeta interface{}) e
 		handler.log.Error(errStr)
 		return errors.New(errStr)
 	}
+	// Run with the base image file
 	handler.log.Functionf("RollbackToSnapshot for a file based volume (%s) to snapshot (%s)", handler.status.FileLocation, snapshotFile)
 	return nil
 }
@@ -229,6 +237,11 @@ func (handler *volumeHandlerFile) DeleteSnapshot(snapshotMeta interface{}) error
 		errStr := fmt.Sprintf("DeleteSnapshot: snapshotMeta is not a string")
 		handler.log.Error(errStr)
 		return errors.New(errStr)
+	}
+	err := diskmetrics.MergeSnapshotToBaseImage(context.Background(), handler.log, handler.status.FileLocation, snapshotFile)
+	if err != nil {
+		handler.log.Errorf("DeleteSnapshot: MergeSnapshotToBaseImage failed: %s", err)
+		return err
 	}
 	handler.log.Functionf("DeleteSnapshot %s for a file based volume (%s)", snapshotFile, handler.status.FileLocation)
 	return nil
