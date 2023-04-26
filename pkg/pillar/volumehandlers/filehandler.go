@@ -202,18 +202,23 @@ func (handler *volumeHandlerFile) maybeResizeDisk(ctx context.Context, diskfile 
 
 // CreateSnapshot creates a snapshot of the volume, returns snapshot file location as metadata
 func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, time.Time, error) {
-	handler.log.Functionf("CreateSnapshot for a file based volume (%s)", handler.status.FileLocation)
+	handler.log.Noticef("CreateSnapshot for a file based volume (%s)", handler.status.FileLocation)
 	createSnapContext := context.Background()
 	snapshotFile := types.SnapshotsDirname + "/" + handler.status.Key() + ".snapshot"
 	baseImagFile := handler.status.FileLocation
+	// XXX: we only support qcow2 for now
 	if handler.status.ContentFormat != zconfig.Format_QCOW2 {
 		return "", time.Time{}, fmt.Errorf("CreateSnapshot: unsupported format %s", handler.status.ContentFormat.String())
 	}
-	format := handler.status.ContentFormat.String()
-	diskmetrics.CreateSnapshotImage(createSnapContext, handler.log, baseImagFile, snapshotFile, format)
+	format := "qcow2"
+	err := diskmetrics.CreateSnapshotImage(createSnapContext, handler.log, baseImagFile, snapshotFile, format)
+	if err != nil {
+		handler.log.Errorf("CreateSnapshot: error creating snapshot image: %s", err)
+		return "", time.Time{}, err
+	}
 	// Replace VolumeStatus with a new snapshot file
 	timeCreated := time.Now()
-	handler.log.Functionf("snapshotFile: %s, timeCreated: %s", snapshotFile, timeCreated)
+	handler.log.Noticef("snapshotFile: %s, timeCreated: %s", snapshotFile, timeCreated)
 	return snapshotFile, timeCreated, nil
 }
 
@@ -226,7 +231,7 @@ func (handler *volumeHandlerFile) RollbackToSnapshot(snapshotMeta interface{}) e
 		return errors.New(errStr)
 	}
 	// Run with the base image file
-	handler.log.Functionf("RollbackToSnapshot for a file based volume (%s) to snapshot (%s)", handler.status.FileLocation, snapshotFile)
+	handler.log.Noticef("RollbackToSnapshot for a file based volume (%s) to snapshot (%s)", handler.status.FileLocation, snapshotFile)
 	return nil
 }
 
@@ -243,6 +248,6 @@ func (handler *volumeHandlerFile) DeleteSnapshot(snapshotMeta interface{}) error
 		handler.log.Errorf("DeleteSnapshot: MergeSnapshotToBaseImage failed: %s", err)
 		return err
 	}
-	handler.log.Functionf("DeleteSnapshot %s for a file based volume (%s)", snapshotFile, handler.status.FileLocation)
+	handler.log.Noticef("DeleteSnapshot %s for a file based volume (%s)", snapshotFile, handler.status.FileLocation)
 	return nil
 }
