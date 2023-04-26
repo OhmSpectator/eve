@@ -5,7 +5,6 @@ package volumemgr
 
 import (
 	"fmt"
-	zconfig "github.com/lf-edge/eve/api/go/config"
 	"github.com/lf-edge/eve/pkg/pillar/types"
 	"github.com/lf-edge/eve/pkg/pillar/volumehandlers"
 	"time"
@@ -25,7 +24,6 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 	snapshotStatus = &types.VolumesSnapshotStatus{
 		SnapshotID:         config.SnapshotID,
 		VolumeSnapshotMeta: make(map[string]interface{}, len(config.VolumeIDs)),
-		VolumeFormat:       make(map[string]zconfig.Format, len(config.VolumeIDs)),
 		AppUUID:            config.AppUUID,
 		StatusSetDuring:    types.VolumesSnapshotCreate,
 		// Save the config UUID and version, so it can be reported later to the controller during the rollback
@@ -61,8 +59,6 @@ func handleVolumesSnapshotCreate(ctxArg interface{}, key string, configArg inter
 		}
 		// Save the snapshot metadata (for example, snapshot file location), so later it can be used for rollback
 		snapshotStatus.VolumeSnapshotMeta[volumeID.String()] = snapshotMeta
-		// Save the volume format, so later can find the corresponding volume handler
-		snapshotStatus.VolumeFormat[volumeID.String()] = volumeStatus.ContentFormat
 		// Save the time when the snapshot was created
 		snapshotStatus.TimeCreated = timeCreated
 	}
@@ -108,9 +104,16 @@ func handleVolumesSnapshotModify(ctxArg interface{}, key string, configArg, _ in
 		return
 	}
 	for volumeID, snapMeta := range volumesSnapshotStatus.VolumeSnapshotMeta {
-		// Create a temporary volume status, so it can be used to find the corresponding volume handler
-		tmpVolumeStatus := types.VolumeStatus{ContentFormat: volumesSnapshotStatus.VolumeFormat[volumeID]}
-		volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, &tmpVolumeStatus)
+		volumeStatus := ctx.lookupVolumeStatusByUUID(volumeID)
+		if volumeStatus == nil {
+			errDesc := types.ErrorDescription{}
+			errDesc.Error = fmt.Sprintf("handleVolumesSnapshotModify: volume %s not found", volumeID)
+			log.Error(errDesc.Error)
+			volumesSnapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+			publishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
+			return
+		}
+		volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, volumeStatus)
 		log.Noticef("handleVolumesSnapshotModify: rollback to snapshot %s for volume %s", config.SnapshotID, volumeID)
 		err := rollbackToSnapshot(volumeHandlers, snapMeta)
 		if err != nil {
@@ -144,9 +147,16 @@ func handleVolumesSnapshotDelete(ctxArg interface{}, keyArg string, configArg in
 	}
 	volumesSnapshotStatus.StatusSetDuring = types.VolumesSnapshotDelete
 	for volumeUUID, snapMeta := range volumesSnapshotStatus.VolumeSnapshotMeta {
-		// Create a temporary volume status, so it can be used to find the corresponding volume handler
-		tmpVolumeStatus := types.VolumeStatus{ContentFormat: volumesSnapshotStatus.VolumeFormat[volumeUUID]}
-		volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, &tmpVolumeStatus)
+		volumeStatus := ctx.lookupVolumeStatusByUUID(volumeUUID)
+		if volumeStatus == nil {
+			errDesc := types.ErrorDescription{}
+			errDesc.Error = fmt.Sprintf("handleVolumesSnapshotDelete: volume %s not found", volumeUUID)
+			log.Error(errDesc.Error)
+			volumesSnapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+			publishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
+			return
+		}
+		volumeHandlers := volumehandlers.GetVolumeHandler(log, ctx, volumeStatus)
 		log.Noticef("handleVolumesSnapshotDelete: delete snapshot %s for volume %s", config.SnapshotID, volumeUUID)
 		err := deleteSnapshot(volumeHandlers, snapMeta)
 		if err != nil {
