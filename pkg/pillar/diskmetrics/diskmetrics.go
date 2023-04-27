@@ -104,31 +104,51 @@ func RolloutImgToBlock(ctx context.Context, log *base.LogObject, diskfile, outpu
 	return nil
 }
 
-// CreateSnapshotImage creates snapshot of diskfile with defined format and size
-func CreateSnapshotImage(ctx context.Context, log *base.LogObject, diskfile, snapshotFile, format string) error {
+// CreateSnapshot creates snapshot of diskfile with defined format and size
+func CreateSnapshot(ctx context.Context, log *base.LogObject, diskfile, snapshotName string) error {
+	// Command line should be:
+	// `qemu-img snapshot -c snapshot_name /path/to/base_image.qcow2`
 	if _, err := os.Stat(diskfile); err != nil {
 		return err
 	}
-	cmd := []string{"create", "-f", format, "-b", diskfile, "-F", format, snapshotFile}
-	log.Noticef("CreateSnapshotImage: /usr/bin/qemu-img %s", strings.Join(cmd, " "))
-	output, err := base.Exec(log, "/usr/bin/qemu-img", cmd...).WithContext(ctx).CombinedOutput()
+	cmdBin := "/usr/bin/qemu-img"
+	cmdArgs := []string{"snapshot", "-c", snapshotName, diskfile}
+	log.Noticef("CreateSnapshot: %s %s", cmdBin, strings.Join(cmdArgs, " "))
+	output, err := base.Exec(log, cmdBin, cmdArgs...).WithContext(ctx).CombinedOutput()
 	if err != nil {
-		errStr := fmt.Sprintf("qemu-img failed: %s, %s\n",
-			err, output)
+		errStr := fmt.Sprintf("qemu-img failed: %s, %s\n", err, output)
 		return errors.New(errStr)
 	}
 	return nil
 }
 
-func MergeSnapshotToBaseImage(ctx context.Context, log *base.LogObject, diskfile, snapshotFile string) error {
+// ApplySnapshot applies snapshot to diskfile
+func ApplySnapshot(ctx context.Context, log *base.LogObject, diskfile, snapshotName string) error {
+	// Command line should be:
+	// `qemu-img snapshot -a snapshot_name /path/to/base_image.qcow2`
 	if _, err := os.Stat(diskfile); err != nil {
 		return err
 	}
-	output, err := base.Exec(log, "/usr/bin/qemu-img", "commit", "-f", "qcow2", "-p", "-b", snapshotFile,
-		diskfile).WithContext(ctx).CombinedOutput()
+	cmdBin := "/usr/bin/qemu-img"
+	cmdArgs := []string{"snapshot", "-a", snapshotName, diskfile}
+	log.Noticef("ApplySnapshot: %s %s", cmdBin, strings.Join(cmdArgs, " "))
+	output, err := base.Exec(log, cmdBin, cmdArgs...).WithContext(ctx).CombinedOutput()
 	if err != nil {
-		errStr := fmt.Sprintf("qemu-img failed: %s, %s\n",
-			err, output)
+		errStr := fmt.Sprintf("qemu-img failed: %s, %s\n", err, output)
+		return errors.New(errStr)
+	}
+	return nil
+}
+
+func DeleteSnapshot(ctx context.Context, log *base.LogObject, snapshotName string) error {
+	// Command line should be:
+	// `qemu-img snapshot -d snapshot_name /path/to/base_image.qcow2`
+	cmdBin := "/usr/bin/qemu-img"
+	cmdArgs := []string{"snapshot", "-d", snapshotName}
+	log.Noticef("DeleteSnapshot: %s %s", cmdBin, strings.Join(cmdArgs, " "))
+	output, err := base.Exec(log, cmdBin, cmdArgs...).WithContext(ctx).CombinedOutput()
+	if err != nil {
+		errStr := fmt.Sprintf("qemu-img failed: %s, %s\n", err, output)
 		return errors.New(errStr)
 	}
 	return nil
