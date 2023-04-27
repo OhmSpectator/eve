@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/lf-edge/eve/pkg/pillar/types"
 	"os"
 	"strings"
 	"time"
@@ -204,50 +203,52 @@ func (handler *volumeHandlerFile) maybeResizeDisk(ctx context.Context, diskfile 
 func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, time.Time, error) {
 	handler.log.Noticef("CreateSnapshot for a file based volume (%s)", handler.status.FileLocation)
 	createSnapContext := context.Background()
-	snapshotFile := types.SnapshotsDirname + "/" + handler.status.Key() + ".snapshot"
+	snapshotName := handler.status.Key() + "-snapshot-" + time.Now().Format("20060102150405")
 	baseImagFile := handler.status.FileLocation
 	// XXX: we only support qcow2 for now
 	if handler.status.ContentFormat != zconfig.Format_QCOW2 {
 		return "", time.Time{}, fmt.Errorf("CreateSnapshot: unsupported format %s", handler.status.ContentFormat.String())
 	}
-	format := "qcow2"
-	err := diskmetrics.CreateSnapshotImage(createSnapContext, handler.log, baseImagFile, snapshotFile, format)
+	err := diskmetrics.CreateSnapshot(createSnapContext, handler.log, baseImagFile, snapshotName)
 	if err != nil {
 		handler.log.Errorf("CreateSnapshot: error creating snapshot image: %s", err)
 		return "", time.Time{}, err
 	}
 	// Replace VolumeStatus with a new snapshot file
 	timeCreated := time.Now()
-	handler.log.Noticef("snapshotFile: %s, timeCreated: %s", snapshotFile, timeCreated)
-	return snapshotFile, timeCreated, nil
+	handler.log.Noticef("CreateSnapshot: created snapshot %s %s", snapshotName, timeCreated.Format("02.01.2006 at 15:04:05"))
+	return snapshotName, timeCreated, nil
 }
 
 func (handler *volumeHandlerFile) RollbackToSnapshot(snapshotMeta interface{}) error {
-	// TODO: implement
-	snapshotFile, ok := snapshotMeta.(string)
+	snapshotName, ok := snapshotMeta.(string)
 	if !ok {
 		errStr := fmt.Sprintf("RollbackToSnapshot: snapshotMeta is not a string")
 		handler.log.Error(errStr)
 		return errors.New(errStr)
 	}
+	err := diskmetrics.ApplySnapshot(context.Background(), handler.log, handler.status.FileLocation, snapshotName)
+	if err != nil {
+		errStr := fmt.Sprintf("RollbackToSnapshot: error applying snapshot image: %s", err)
+		handler.log.Error(errStr)
+		return errors.New(errStr)
+	}
 	// Run with the base image file
-	handler.log.Noticef("RollbackToSnapshot for a file based volume (%s) to snapshot (%s)", handler.status.FileLocation, snapshotFile)
+	handler.log.Noticef("RollbackToSnapshot for a file based volume (%s) to snapshot (%s)", handler.status.FileLocation, snapshotName)
 	return nil
 }
 
 func (handler *volumeHandlerFile) DeleteSnapshot(snapshotMeta interface{}) error {
-	// TODO: implement
-	snapshotFile, ok := snapshotMeta.(string)
+	snapshotName, ok := snapshotMeta.(string)
 	if !ok {
 		errStr := fmt.Sprintf("DeleteSnapshot: snapshotMeta is not a string")
 		handler.log.Error(errStr)
 		return errors.New(errStr)
 	}
-	err := diskmetrics.MergeSnapshotToBaseImage(context.Background(), handler.log, handler.status.FileLocation, snapshotFile)
+	err := diskmetrics.DeleteSnapshot(context.Background(), handler.log, snapshotName)
 	if err != nil {
-		handler.log.Errorf("DeleteSnapshot: MergeSnapshotToBaseImage failed: %s", err)
+		handler.log.Errorf("DeleteSnapshot: error deleting snapshot image: %s", err)
 		return err
 	}
-	handler.log.Noticef("DeleteSnapshot %s for a file based volume (%s)", snapshotFile, handler.status.FileLocation)
 	return nil
 }
