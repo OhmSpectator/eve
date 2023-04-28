@@ -245,7 +245,7 @@ func (handler *volumeHandlerFile) DeleteSnapshot(snapshotMeta interface{}) error
 		handler.log.Error(errStr)
 		return errors.New(errStr)
 	}
-	err := diskmetrics.DeleteSnapshot(context.Background(), handler.log, snapshotName)
+	err := diskmetrics.DeleteSnapshot(context.Background(), handler.log, handler.status.FileLocation, snapshotName)
 	if err != nil {
 		handler.log.Errorf("DeleteSnapshot: error deleting snapshot image: %s", err)
 		return err

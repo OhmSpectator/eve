@@ -168,6 +168,18 @@ func handleVolumesSnapshotDelete(ctxArg interface{}, keyArg string, configArg in
 			return
 		}
 		log.Noticef("handleVolumesSnapshotDelete: successfully deleted snapshot %s for volume %s", config.SnapshotID, volumeUUID)
+		// Decrement the refcount for the volume, so it can be deleted if needed
+		currentVolumeRefConfig := lookupVolumeRefConfig(ctx, volumeStatus.Key())
+		newVolumeRefConfig := types.VolumeRefConfig{
+			VolumeID:               currentVolumeRefConfig.VolumeID,
+			GenerationCounter:      currentVolumeRefConfig.GenerationCounter,
+			LocalGenerationCounter: currentVolumeRefConfig.LocalGenerationCounter,
+			RefCount:               currentVolumeRefConfig.RefCount - 1,
+			MountDir:               currentVolumeRefConfig.MountDir,
+			VerifyOnly:             currentVolumeRefConfig.VerifyOnly,
+		}
+		log.Noticef("handleVolumesSnapshotDelete: decrementing refcount for volume %s to %d", volumeUUID, newVolumeRefConfig.RefCount)
+		handleVolumeRefModify(ctx, volumeStatus.Key(), newVolumeRefConfig, *currentVolumeRefConfig)
 	}
 	unpublishVolumesSnapshotStatus(ctx, volumesSnapshotStatus)
 	log.Noticef("handleVolumesSnapshotDelete(%s) done", keyArg)

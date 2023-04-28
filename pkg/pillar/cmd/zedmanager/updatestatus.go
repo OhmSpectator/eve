@@ -4,6 +4,7 @@
 package zedmanager
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -136,9 +137,27 @@ func doUpdate(ctx *zedmanagerContext,
 			status.Key())
 	}
 
+	domainStatus := lookupDomainStatus(ctx, uuidStr)
+
+	if len(status.SnapshotsToBeDeleted) > 0 && !domainStatus.Activated {
+		triggerSnapshotDeletion(status.SnapshotsToBeDeleted, ctx, status)
+	}
+
 	// Trigger the rollback if needed
-	if status.RollbackInProgress {
-		triggerRollback(ctx, config, status)
+	if status.RollbackInProgress && !domainStatus.Activated {
+		err := triggerRollback(ctx, config)
+		if err != nil {
+			errDesc := types.ErrorDescription{}
+			errStr := fmt.Sprintf("doUpdate(%s) triggerRollback failed: %s", uuidStr, err)
+			errDesc.Error = errStr
+			log.Error(errStr)
+			status.SetErrorWithSourceAndDescription(errDesc, types.AppInstanceStatus{})
+			log.Noticef("Setting RollbackInProgress to false 1")
+			status.RollbackInProgress = false
+			return changed
+		}
+		log.Noticef("Setting RollbackInProgress to false 2")
+		status.RollbackInProgress = false
 	}
 
 	if status.PurgeInprogress == types.RecreateVolumes {
@@ -175,7 +194,7 @@ func doUpdate(ctx *zedmanagerContext,
 	log.Functionf("Have config.Activate for %s", uuidStr)
 	c = doActivate(ctx, uuidStr, config, status)
 	status.UpgradeInProgress = false
-	status.RollbackInProgress = false
+	//status.RollbackInProgress = false
 	changed = changed || c
 	log.Functionf("doUpdate done for %s", uuidStr)
 	return changed
@@ -229,18 +248,18 @@ func removeVolumesSnapshotConfig(snapshotsToBeTriggered []types.VolumesSnapshotC
 	return snapshotsToBeTriggered
 }
 
-func triggerRollback(ctx *zedmanagerContext, config types.AppInstanceConfig, status *types.AppInstanceStatus) {
+func triggerRollback(ctx *zedmanagerContext, config types.AppInstanceConfig) error {
 	log.Noticef("Triggering rollback with snapshot %s", config.Snapshot.ActiveSnapshot)
 	// Find the snapshot config for the snapshot to be rolled back
 	volumesSnapshotConfig := lookupVolumesSnapshotConfig(ctx, config.Snapshot.ActiveSnapshot)
 	if volumesSnapshotConfig == nil {
 		log.Errorf("triggerRollback: No snapshot config found for %s", config.Snapshot.ActiveSnapshot)
-		// TODO set error status
-		return
+		return errors.New("no snapshot config found")
 	}
 	// Switch the action to rollback
 	volumesSnapshotConfig.Action = types.VolumesSnapshotRollback
 	publishVolumesSnapshotConfig(ctx, volumesSnapshotConfig)
+	return nil
 }
 
 func lookupVolumesSnapshotConfig(ctx *zedmanagerContext, snapshot string) *types.VolumesSnapshotConfig {
