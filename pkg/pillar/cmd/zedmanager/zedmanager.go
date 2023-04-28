@@ -546,6 +546,8 @@ func restoreAndApplyConfigFromSnapshot(ctx *zedmanagerContext, status types.Volu
 	if currentAppInstanceConfig == nil {
 		return fmt.Errorf("AppInstanceConfig not found for %s", appInstanceStatus.Key())
 	}
+	// Sync the information about available snapshots
+	syncAvailableSnapshots(currentAppInstanceConfig, snappedAppInstanceConfig)
 	// Apply the app instance config from the snapshot
 	log.Noticef("Applying config (calling handleModify) from snapshot %s", status.SnapshotID)
 	handleModify(ctx, appInstanceStatus.Key(), *snappedAppInstanceConfig, *currentAppInstanceConfig)
@@ -554,6 +556,12 @@ func restoreAndApplyConfigFromSnapshot(ctx *zedmanagerContext, status types.Volu
 	publishAppInstanceStatus(ctx, appInstanceStatus)
 	return nil
 
+}
+
+func syncAvailableSnapshots(srcConfig *types.AppInstanceConfig, dstConfig *types.AppInstanceConfig) {
+	log.Noticef("syncAvailableSnapshots")
+	dstConfig.Snapshot.Snapshots = make([]types.SnapshotDesc, len(srcConfig.Snapshot.Snapshots))
+	copy(dstConfig.Snapshot.Snapshots, srcConfig.Snapshot.Snapshots)
 }
 
 func getAppInstanceConfigFromSnapshot(status *types.SnapshotStatus) *types.AppInstanceConfig {
@@ -615,23 +623,6 @@ func handleVolumesSnapshotStatusDelete(ctx interface{}, key string, status inter
 		log.Errorf(errDesc.Error)
 		errDesc.ErrorTime = time.Now()
 		appInstanceStatus.ErrorAndTimeWithSource.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
-	}
-	// Decrement the ref count for the volumes
-	volumesSnapshotConfig := lookupVolumesSnapshotConfig(zedmanagerCtx, volumesSnapshotStatus.Key())
-	for _, volume := range volumesSnapshotConfig.VolumeIDs {
-		// We can use the volume ID as the key for the volume status
-		// Works only if generation is not used (always 0)
-		tmpVolumeStatus := types.VolumeStatus{
-			VolumeID: volume,
-		}
-		volumeRefConfig := lookupVolumeRefConfig(zedmanagerCtx, tmpVolumeStatus.Key())
-		if volumeRefConfig == nil {
-			log.Errorf("handleVolumesSnapshotStatusDelete: VolumeRefConfig not found for %s", tmpVolumeStatus.Key())
-			continue
-		}
-		volumeRefConfig.RefCount--
-		// Publish the volume ref config, so it can be deleted if ref count is 0
-		publishVolumeRefConfig(zedmanagerCtx, volumeRefConfig)
 	}
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 }
@@ -976,20 +967,15 @@ func handleModify(ctxArg interface{}, key string,
 
 	status.StartTime = ctx.delayBaseTime.Add(config.Delay)
 
-	snapshotsToBeDeleted := updateSnapshotInfoInAppStatus(status, config)
-	if len(snapshotsToBeDeleted) > 0 {
+	status.SnapshotsToBeDeleted = updateSnapshotInfoInAppStatus(status, config)
+	if len(status.SnapshotsToBeDeleted) > 0 {
+		// Mark the VM to be rebooted
+		status.RestartInprogress = types.BringDown
+		status.State = types.RESTARTING
+		status.RestartStartedAt = time.Now()
+		log.Noticef("Setting the RollbackInProgress flag to true")
 		// Trigger Snapshot Deletion
-		for _, snapshot := range snapshotsToBeDeleted {
-			log.Noticef("Deleting snapshot %s", snapshot.SnapshotID)
-			volumesSnapshotConfig := lookupVolumesSnapshotConfig(ctx, snapshot.SnapshotID)
-			if volumesSnapshotConfig != nil {
-				// The snapshot has already been triggered, so we need to delete the config and notify volumemanager
-				log.Noticef("It has already been triggered, so deleting the config and notifying volumemanager")
-				unpublishVolumesSnapshotConfig(ctx, volumesSnapshotConfig)
-			}
-			log.Noticef("Deleting snapshot from the App status")
-			deleteSnapshotFromStatus(status, snapshot.SnapshotID)
-		}
+		publishAppInstanceStatus(ctx, status)
 	}
 
 	effectiveActivate := effectiveActivateCurrentProfile(config, ctx.currentProfile)
@@ -1088,6 +1074,7 @@ func handleModify(ctxArg interface{}, key string,
 		status.RestartInprogress = types.BringDown
 		status.State = types.RESTARTING
 		status.RestartStartedAt = time.Now()
+		log.Noticef("Setting the RollbackInProgress flag to true")
 		status.RollbackInProgress = true
 		//publishAppInstanceStatus(ctx, status)
 	}
@@ -1102,6 +1089,20 @@ func handleModify(ctxArg interface{}, key string,
 	}
 	publishAppInstanceStatus(ctx, status)
 	log.Functionf("handleModify done for %s", config.DisplayName)
+}
+
+func triggerSnapshotDeletion(snapshotsToBeDeleted []types.SnapshotDesc, ctx *zedmanagerContext, status *types.AppInstanceStatus) {
+	for _, snapshot := range snapshotsToBeDeleted {
+		log.Noticef("Deleting snapshot %s", snapshot.SnapshotID)
+		volumesSnapshotConfig := lookupVolumesSnapshotConfig(ctx, snapshot.SnapshotID)
+		if volumesSnapshotConfig != nil {
+			// The snapshot has already been triggered, so we need to delete the config and notify volumemanager
+			log.Noticef("It has already been triggered, so deleting the config and notifying volumemanager")
+			unpublishVolumesSnapshotConfig(ctx, volumesSnapshotConfig)
+		}
+		log.Noticef("Deleting snapshot from the App status")
+		deleteSnapshotFromStatus(status, snapshot.SnapshotID)
+	}
 }
 
 func deleteSnapshotFromStatus(status *types.AppInstanceStatus, id string) {
