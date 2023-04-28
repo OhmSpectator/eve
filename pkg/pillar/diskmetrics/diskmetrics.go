@@ -140,11 +140,11 @@ func ApplySnapshot(ctx context.Context, log *base.LogObject, diskfile, snapshotN
 	return nil
 }
 
-func DeleteSnapshot(ctx context.Context, log *base.LogObject, snapshotName string) error {
+func DeleteSnapshot(ctx context.Context, log *base.LogObject, diskfile, snapshotName string) error {
 	// Command line should be:
 	// `qemu-img snapshot -d snapshot_name /path/to/base_image.qcow2`
 	cmdBin := "/usr/bin/qemu-img"
-	cmdArgs := []string{"snapshot", "-d", snapshotName}
+	cmdArgs := []string{"snapshot", "-d", snapshotName, diskfile}
 	log.Noticef("DeleteSnapshot: %s %s", cmdBin, strings.Join(cmdArgs, " "))
 	output, err := base.Exec(log, cmdBin, cmdArgs...).WithContext(ctx).CombinedOutput()
 	if err != nil {

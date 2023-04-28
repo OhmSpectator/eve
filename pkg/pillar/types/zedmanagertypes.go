@@ -275,6 +275,8 @@ type AppInstanceStatus struct {
 	SnapshotsToBeTriggered []VolumesSnapshotConfig
 	// RollbackInProgress indicates whether a rollback is in progress for the app instance.
 	RollbackInProgress bool
+	// SnapshotsToBeDeleted contains the list of snapshots to be deleted for the app instance.
+	SnapshotsToBeDeleted []SnapshotDesc
 }
 
 // AppCount is uint8 and it should be sufficient for the number of apps we can support
