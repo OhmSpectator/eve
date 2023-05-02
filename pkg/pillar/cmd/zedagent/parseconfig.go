@@ -545,28 +545,41 @@ func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 		appInstance.CloudInitVersion = cfgApp.CloudInitVersion
 		appInstance.FixedResources.CPUsPinned = cfgApp.Fixedresources.PinCpu
 
-		// Mock for the test
-		var activeSnapshot uuid.UUID
-		testCounter++
-		if testSnapshot == uuid.Nil {
-			testSnapshot, _ = uuid.NewV4()
-		} else {
-			activeSnapshot = testSnapshot
-		}
-		cfgApp.Snapshot = &zconfig.SnapshotConfig{
-			MaxSnapshots: 1,
-		}
-		if activeSnapshot != uuid.Nil && testCounter < 4 {
-			cfgApp.Snapshot.Snapshots = make([]*zconfig.SnapshotDesc, 1)
+		// Mock for the snapshot testing
+		if cfgApp.Snapshot == nil {
+			log.Noticef("@ohm: Mocking snapshot config for %s", appInstance.UUIDandVersion.UUID)
+			if testSnapshot == uuid.Nil {
+				testSnapshot, _ = uuid.NewV4()
+			}
+
+			// Always create a snapshot config for 1 snapshot
+			cfgApp.Snapshot = &zconfig.SnapshotConfig{
+				MaxSnapshots: 1,
+				Snapshots:    make([]*zconfig.SnapshotDesc, 1),
+			}
 			cfgApp.Snapshot.Snapshots[0] = &zconfig.SnapshotDesc{
 				Id:   testSnapshot.String(),
 				Type: zconfig.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE,
 			}
+
+			// Rollback if the start delay is 10 seconds
+			if cfgApp.StartDelayInSeconds == 10 {
+				cfgApp.Snapshot.RollbackCmd = new(zconfig.InstanceOpsCmd)
+				cfgApp.Snapshot.ActiveSnapshot = testSnapshot.String()
+				cfgApp.Snapshot.RollbackCmd.Counter = 1
+			}
+
+			// Delete the snapshot if the start delay is 11 seconds
+			if cfgApp.StartDelayInSeconds == 11 {
+				cfgApp.Snapshot.Snapshots = cfgApp.Snapshot.Snapshots[:0]
+			}
 		}
-		if activeSnapshot != uuid.Nil && testCounter >= 3 {
-			cfgApp.Snapshot.RollbackCmd = new(zconfig.InstanceOpsCmd)
-			cfgApp.Snapshot.ActiveSnapshot = activeSnapshot.String()
-			cfgApp.Snapshot.RollbackCmd.Counter = 1
+
+		log.Noticef("@ohm: App %s has snapshot config", appInstance.UUIDandVersion.UUID)
+		log.Noticef("@ohm: MaxSnapshots %d, ActiveSnapshot %s, RollbackCmd %v",
+			cfgApp.Snapshot.MaxSnapshots, cfgApp.Snapshot.ActiveSnapshot, cfgApp.Snapshot.RollbackCmd)
+		for _, snap := range cfgApp.Snapshot.Snapshots {
+			log.Noticef("@ohm:   Snapshot %s, Type %v", snap.Id, snap.Type)
 		}
 
 		// Parse the snapshot related fields
