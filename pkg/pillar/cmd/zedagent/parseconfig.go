@@ -545,28 +545,32 @@ func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 		appInstance.CloudInitVersion = cfgApp.CloudInitVersion
 		appInstance.FixedResources.CPUsPinned = cfgApp.Fixedresources.PinCpu
 
-		// Mock for the test
-		var activeSnapshot uuid.UUID
-		testCounter++
+		// Mock for the snapshot testing
+
 		if testSnapshot == uuid.Nil {
 			testSnapshot, _ = uuid.NewV4()
-		} else {
-			activeSnapshot = testSnapshot
 		}
+
+		// Always create a snapshot config for 1 snapshot
 		cfgApp.Snapshot = &zconfig.SnapshotConfig{
 			MaxSnapshots: 1,
+			Snapshots:    make([]*zconfig.SnapshotDesc, 1),
 		}
-		if activeSnapshot != uuid.Nil && testCounter < 4 {
-			cfgApp.Snapshot.Snapshots = make([]*zconfig.SnapshotDesc, 1)
-			cfgApp.Snapshot.Snapshots[0] = &zconfig.SnapshotDesc{
-				Id:   testSnapshot.String(),
-				Type: zconfig.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE,
-			}
+		cfgApp.Snapshot.Snapshots[0] = &zconfig.SnapshotDesc{
+			Id:   testSnapshot.String(),
+			Type: zconfig.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE,
 		}
-		if activeSnapshot != uuid.Nil && testCounter >= 3 {
+
+		// Rollback if the start delay is 10 seconds
+		if cfgApp.StartDelayInSeconds == 10 {
 			cfgApp.Snapshot.RollbackCmd = new(zconfig.InstanceOpsCmd)
-			cfgApp.Snapshot.ActiveSnapshot = activeSnapshot.String()
+			cfgApp.Snapshot.ActiveSnapshot = testSnapshot.String()
 			cfgApp.Snapshot.RollbackCmd.Counter = 1
+		}
+
+		// Delete the snapshot if the start delay is 11 seconds
+		if cfgApp.StartDelayInSeconds == 11 {
+			cfgApp.Snapshot.Snapshots = cfgApp.Snapshot.Snapshots[:0]
 		}
 
 		// Parse the snapshot related fields
