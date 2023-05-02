@@ -152,11 +152,9 @@ func doUpdate(ctx *zedmanagerContext,
 			errDesc.Error = errStr
 			log.Error(errStr)
 			status.SetErrorWithSourceAndDescription(errDesc, types.AppInstanceStatus{})
-			log.Noticef("Setting RollbackInProgress to false 1")
 			status.RollbackInProgress = false
 			return changed
 		}
-		log.Noticef("Setting RollbackInProgress to false 2")
 		status.RollbackInProgress = false
 	}
 
