@@ -56,24 +56,26 @@ type volumemgrContext struct {
 	pubVerifyImageConfig pubsub.Publication
 	subVerifyImageStatus pubsub.Subscription
 
-	subResolveStatus        pubsub.Subscription
-	pubResolveConfig        pubsub.Publication
-	subContentTreeConfig    pubsub.Subscription
-	pubContentTreeStatus    pubsub.Publication
-	subVolumeConfig         pubsub.Subscription
-	pubVolumeStatus         pubsub.Publication
-	subVolumeRefConfig      pubsub.Subscription
-	pubVolumeRefStatus      pubsub.Publication
-	pubContentTreeToHash    pubsub.Publication
-	pubBlobStatus           pubsub.Publication
-	pubDiskMetric           pubsub.Publication
-	pubAppDiskMetric        pubsub.Publication
-	subDatastoreConfig      pubsub.Subscription
-	subZVolStatus           pubsub.Subscription
-	pubVolumeCreatePending  pubsub.Publication
-	diskMetricsTickerHandle interface{}
-	gc                      *time.Ticker
-	deferDelete             *time.Ticker
+	subResolveStatus         pubsub.Subscription
+	pubResolveConfig         pubsub.Publication
+	subContentTreeConfig     pubsub.Subscription
+	pubContentTreeStatus     pubsub.Publication
+	subVolumeConfig          pubsub.Subscription
+	pubVolumeStatus          pubsub.Publication
+	subVolumeRefConfig       pubsub.Subscription
+	pubVolumeRefStatus       pubsub.Publication
+	pubContentTreeToHash     pubsub.Publication
+	pubBlobStatus            pubsub.Publication
+	pubDiskMetric            pubsub.Publication
+	pubAppDiskMetric         pubsub.Publication
+	subDatastoreConfig       pubsub.Subscription
+	subZVolStatus            pubsub.Subscription
+	pubVolumeCreatePending   pubsub.Publication
+	subVolumesSnapshotConfig pubsub.Subscription
+	pubVolumesSnapshotStatus pubsub.Publication
+	diskMetricsTickerHandle  interface{}
+	gc                       *time.Ticker
+	deferDelete              *time.Ticker
 
 	worker worker.Worker // For background work
 
@@ -99,6 +101,18 @@ type volumemgrContext struct {
 
 	// cli options
 	versionPtr *bool
+}
+
+func (ctxPtr *volumemgrContext) lookupVolumeStatusByUUID(id string) *types.VolumeStatus {
+	sub := ctxPtr.pubVolumeStatus
+	items := sub.GetAll()
+	for _, st := range items {
+		status := st.(types.VolumeStatus)
+		if status.VolumeID.String() == id {
+			return &status
+		}
+	}
+	return nil
 }
 
 func (ctxPtr *volumemgrContext) GetCasClient() cas.CAS {
@@ -502,6 +516,34 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	ctx.subZVolStatus = subZVolStatus
 	subZVolStatus.Activate()
 
+	subVolumesSnapshotConfig, err := ps.NewSubscription(pubsub.SubscriptionOptions{
+		CreateHandler: handleVolumesSnapshotCreate,
+		ModifyHandler: handleVolumesSnapshotModify,
+		DeleteHandler: handleVolumesSnapshotDelete,
+		WarningTime:   warningTime,
+		ErrorTime:     errorTime,
+		AgentName:     "zedmanager",
+		TopicImpl:     types.VolumesSnapshotConfig{},
+		Ctx:           &ctx,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx.subVolumesSnapshotConfig = subVolumesSnapshotConfig
+	subVolumesSnapshotConfig.Activate()
+
+	pubVolumesSnapshotStatus, err := ps.NewPublication(
+		pubsub.PublicationOptions{
+			AgentName:  agentName,
+			TopicType:  types.VolumesSnapshotStatus{},
+			Persistent: true,
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx.pubVolumesSnapshotStatus = pubVolumesSnapshotStatus
+
 	if ctx.casClient, err = cas.NewCAS(casClientType); err != nil {
 		err = fmt.Errorf("Run: exception while initializing CAS client: %s", err.Error())
 		log.Fatal(err)
@@ -607,6 +649,9 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 
 		case change := <-ctx.subZVolStatus.MsgChan():
 			ctx.subZVolStatus.ProcessChange(change)
+
+		case change := <-ctx.subVolumesSnapshotConfig.MsgChan():
+			ctx.subVolumesSnapshotConfig.ProcessChange(change)
 
 		case <-ctx.gc.C:
 			start := time.Now()

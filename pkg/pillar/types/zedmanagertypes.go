@@ -5,6 +5,7 @@ package types
 
 import (
 	"fmt"
+	"github.com/lf-edge/eve/api/go/info"
 	"net"
 	"time"
 
@@ -62,18 +63,54 @@ func (s SnapshotType) String() string {
 	}
 }
 
-// SnapshotDesc a description of a snapshot instance
-type SnapshotDesc struct {
-	SnapshotID   string       // UUID of the snapshot
-	SnapshotType SnapshotType // Type of the snapshot creation trigger
+func (s SnapshotType) ConvertToInfoSnapshotType() info.SnapshotType {
+	switch s {
+	case SnapshotTypeAppUpdate:
+		return info.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE
+	default:
+		return info.SnapshotType_SNAPSHOT_TYPE_UNSPECIFIED
+	}
 }
 
-// SnapshotConfig configuration of the snapshot handling for the app instance
+// SnapshotDesc a description of a snapshot instance
+type SnapshotDesc struct {
+	// SnapshotID is the UUID of the snapshot
+	SnapshotID string
+	// SnapshotType is the type of the snapshot creation trigger
+	SnapshotType SnapshotType
+}
+
+// SnapshotStatus status of a snapshot instance. Used as a zedmanager-level representation of a snapshot
+type SnapshotStatus struct {
+	// Snapshot contains the snapshot description
+	Snapshot SnapshotDesc
+	// Reported indicates if the snapshot has been reported to the controller
+	Reported bool
+	// TimeTriggered is the time when the snapshot was triggered. At the moment, it is used to check if the snapshot has
+	// already been triggered. Later it can be used to order the snapshots for example in the case of choosing the
+	// snapshot to be deleted.
+	TimeTriggered time.Time
+	// TimeCreated is the time when the snapshot was created. It's reported by FS-specific snapshot creation code.
+	TimeCreated time.Time
+	// AppInstanceID is the UUID of the app instance the snapshot belongs to
+	AppInstanceID uuid.UUID
+	// ConfigVersion is the version of the app instance config at the moment of the snapshot creation
+	// It is reported to the controller, so it can use the proper config to roll back the app instance
+	ConfigVersion UUIDandVersion
+	// Error indicates if snapshot deletion or a rollback to the snapshot failed
+	Error string
+}
+
+// SnapshotConfig configuration of the snapshot, coming from the controller
 type SnapshotConfig struct {
-	ActiveSnapshot string            // UUID of the active snapshot used by the app instance
-	MaxSnapshots   uint32            // Number of snapshots that may be created for the app instance
-	RollbackCmd    AppInstanceOpsCmd // Command to roll back the app instance to the active snapshot
-	Snapshots      []SnapshotDesc    // List of snapshots known to the controller at the moment
+	// ActiveSnapshot is the UUID of the snapshot requested by controller to be used for rollback
+	ActiveSnapshot string
+	// MaxSnapshots is the maximum number of snapshots allowed for the app instance
+	MaxSnapshots uint32
+	// RollbackCmd is the command to roll back the app instance to the active snapshot
+	RollbackCmd AppInstanceOpsCmd
+	// Snapshots is the list of snapshots known to the controller at the moment
+	Snapshots []SnapshotDesc
 }
 
 // This is what we assume will come from the ZedControl for each
@@ -224,6 +261,22 @@ type AppInstanceStatus struct {
 	ErrorAndTimeWithSource
 	// Effective time, when the application should start
 	StartTime time.Time
+
+	// SnapshotOnUpgrade indicates whether a snapshot should be taken during the app instance update.
+	SnapshotOnUpgrade bool
+	UpgradeInProgress bool
+	// AvailableSnapshots contains the list of snapshots available for the app instance.
+	AvailableSnapshots []SnapshotStatus
+	// SnapshotsToBeTaken contains the list of snapshots to be taken for the app instance.
+	SnapshotsToBeTaken []SnapshotStatus
+	// MaxSnapshots indicates the maximum number of snapshots to be kept for the app instance.
+	MaxSnapshots uint32
+	// SnapshotsToBeTriggered contains the list of snapshots to be triggered for the app instance.
+	SnapshotsToBeTriggered []VolumesSnapshotConfig
+	// RollbackInProgress indicates whether a rollback is in progress for the app instance.
+	RollbackInProgress bool
+	// SnapshotsToBeDeleted contains the list of snapshots to be deleted for the app instance.
+	SnapshotsToBeDeleted []SnapshotDesc
 }
 
 // AppCount is uint8 and it should be sufficient for the number of apps we can support
@@ -315,6 +368,23 @@ const (
 	RecreateVolumes
 	BringUp
 )
+
+func (i Inprogress) String() string {
+	switch i {
+	case NotInprogress:
+		return "NotInprogress"
+	case DownloadAndVerify:
+		return "DownloadAndVerify"
+	case BringDown:
+		return "BringDown"
+	case RecreateVolumes:
+		return "RecreateVolumes"
+	case BringUp:
+		return "BringUp"
+	default:
+		return fmt.Sprintf("Unknown Inprogress %d", i)
+	}
+}
 
 func (status AppInstanceStatus) Key() string {
 	return status.UUIDandVersion.UUID.String()

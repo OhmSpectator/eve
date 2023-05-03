@@ -4,6 +4,7 @@
 package zedmanager
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,6 +54,11 @@ func removeAIStatusUUID(ctx *zedmanagerContext, uuidStr string) {
 func removeAIStatus(ctx *zedmanagerContext, status *types.AppInstanceStatus) {
 	uuidStr := status.Key()
 	uninstall := (status.PurgeInprogress != types.BringDown)
+	domainStatus := lookupDomainStatus(ctx, uuidStr)
+	// The VM has been just shutdown.
+	if status.SnapshotOnUpgrade && !uninstall && len(status.SnapshotsToBeTaken) > 0 && !domainStatus.Activated {
+		triggerSnapshots(ctx, status)
+	}
 	changed, done := doRemove(ctx, status, uninstall)
 	if changed {
 		log.Functionf("removeAIStatus status change for %s",
@@ -120,6 +126,7 @@ func doUpdate(ctx *zedmanagerContext,
 		status.PurgeInprogress = types.BringDown
 		changed = true
 		// Keep the old volumes in place
+		log.Noticef("PurgeInprogress(%s) done, call doRemove, print the volumes info", status.Key())
 		_, done := doRemove(ctx, status, false)
 		if !done {
 			log.Functionf("PurgeInprogress(%s) waiting for removal",
@@ -128,6 +135,27 @@ func doUpdate(ctx *zedmanagerContext,
 		}
 		log.Functionf("PurgeInprogress(%s) bringing it up",
 			status.Key())
+	}
+
+	domainStatus := lookupDomainStatus(ctx, uuidStr)
+
+	if len(status.SnapshotsToBeDeleted) > 0 && !domainStatus.Activated {
+		triggerSnapshotDeletion(status.SnapshotsToBeDeleted, ctx, status)
+	}
+
+	// Trigger the rollback if needed
+	if status.RollbackInProgress && !domainStatus.Activated {
+		err := triggerRollback(ctx, config)
+		if err != nil {
+			errDesc := types.ErrorDescription{}
+			errStr := fmt.Sprintf("doUpdate(%s) triggerRollback failed: %s", uuidStr, err)
+			errDesc.Error = errStr
+			log.Error(errStr)
+			status.SetErrorWithSourceAndDescription(errDesc, types.AppInstanceStatus{})
+			status.RollbackInProgress = false
+			return changed
+		}
+		status.RollbackInProgress = false
 	}
 
 	if status.PurgeInprogress == types.RecreateVolumes {
@@ -163,9 +191,85 @@ func doUpdate(ctx *zedmanagerContext,
 	}
 	log.Functionf("Have config.Activate for %s", uuidStr)
 	c = doActivate(ctx, uuidStr, config, status)
+	status.UpgradeInProgress = false
+	//status.RollbackInProgress = false
 	changed = changed || c
 	log.Functionf("doUpdate done for %s", uuidStr)
 	return changed
+}
+
+// We cannot create a volumesSnapshotConfig and trigger the snapshot here because the application is still running.
+func createVolumesSnapshotConfigs(ctx *zedmanagerContext, config types.AppInstanceConfig, status *types.AppInstanceStatus) []types.VolumesSnapshotConfig {
+	var volumesSnapshotConfigList []types.VolumesSnapshotConfig
+	for _, snapshot := range status.SnapshotsToBeTaken {
+		if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate {
+			log.Noticef("Creating volumesSnapshotConfig for snapshot %s", snapshot.Snapshot.SnapshotID)
+			volumesSnapshotConfig := types.VolumesSnapshotConfig{
+				SnapshotID: snapshot.Snapshot.SnapshotID,
+				Action:     types.VolumesSnapshotCreate,
+				AppUUID:    status.UUIDandVersion.UUID,
+			}
+			for _, volumeRefConfig := range config.VolumeRefConfigList {
+				log.Noticef("Adding volume %s to volumesSnapshotConfig", volumeRefConfig.VolumeID)
+				volumesSnapshotConfig.VolumeIDs = append(volumesSnapshotConfig.VolumeIDs, volumeRefConfig.VolumeID)
+				// Increment the reference count for the volume, so it's not deleted when it's temporary not used by any application
+				volumeRefConfig.RefCount++
+				publishVolumeRefConfig(ctx, &volumeRefConfig)
+			}
+			volumesSnapshotConfigList = append(volumesSnapshotConfigList, volumesSnapshotConfig)
+		}
+	}
+	return volumesSnapshotConfigList
+}
+
+func triggerSnapshots(ctx *zedmanagerContext, status *types.AppInstanceStatus) {
+	timeTriggered := time.Now()
+	for _, snapshot := range status.SnapshotsToBeTaken {
+		if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate && snapshot.TimeTriggered.IsZero() {
+			log.Noticef("Setting  snapshot %s timeTriggered to %v", snapshot.Snapshot.SnapshotID, timeTriggered)
+			snapshot.TimeTriggered = timeTriggered
+		}
+	}
+	for _, volumesSnapshotConfig := range status.SnapshotsToBeTriggered {
+		log.Noticef("Triggering snapshot %s", volumesSnapshotConfig.SnapshotID)
+		publishVolumesSnapshotConfig(ctx, &volumesSnapshotConfig)
+		status.SnapshotsToBeTriggered = removeVolumesSnapshotConfig(status.SnapshotsToBeTriggered, volumesSnapshotConfig.SnapshotID)
+	}
+}
+
+func removeVolumesSnapshotConfig(snapshotsToBeTriggered []types.VolumesSnapshotConfig, id string) []types.VolumesSnapshotConfig {
+	for i, volumesSnapshotConfig := range snapshotsToBeTriggered {
+		if volumesSnapshotConfig.SnapshotID == id {
+			return append(snapshotsToBeTriggered[:i], snapshotsToBeTriggered[i+1:]...)
+		}
+	}
+	return snapshotsToBeTriggered
+}
+
+func triggerRollback(ctx *zedmanagerContext, config types.AppInstanceConfig) error {
+	log.Noticef("Triggering rollback with snapshot %s", config.Snapshot.ActiveSnapshot)
+	// Find the snapshot config for the snapshot to be rolled back
+	volumesSnapshotConfig := lookupVolumesSnapshotConfig(ctx, config.Snapshot.ActiveSnapshot)
+	if volumesSnapshotConfig == nil {
+		log.Errorf("triggerRollback: No snapshot config found for %s", config.Snapshot.ActiveSnapshot)
+		return errors.New("no snapshot config found")
+	}
+	// Switch the action to rollback
+	volumesSnapshotConfig.Action = types.VolumesSnapshotRollback
+	publishVolumesSnapshotConfig(ctx, volumesSnapshotConfig)
+	return nil
+}
+
+func lookupVolumesSnapshotConfig(ctx *zedmanagerContext, snapshot string) *types.VolumesSnapshotConfig {
+	key := snapshot
+	pub := ctx.pubVolumesSnapshotConfig
+	c, _ := pub.Get(key)
+	if c == nil {
+		log.Errorf("lookupVolumesSnapshotConfig(%s) not found", key)
+		return nil
+	}
+	config := c.(types.VolumesSnapshotConfig)
+	return &config
 }
 
 func doInstall(ctx *zedmanagerContext,
@@ -830,6 +934,7 @@ func doInactivate(ctx *zedmanagerContext, appInstID uuid.UUID,
 			log.Functionf("doInactivate: Clearing Activate for DomainConfig for %s",
 				uuidStr)
 			dc.Activate = false
+			dc.SnapshotOnInactivate = status.SnapshotOnUpgrade
 			publishDomainConfig(ctx, dc)
 		}
 	}
@@ -946,6 +1051,7 @@ func doUninstall(ctx *zedmanagerContext, appInstID uuid.UUID,
 		MaybeRemoveVolumeRefConfig(ctx, appInstID,
 			vrs.VolumeID, vrs.GenerationCounter, vrs.LocalGenerationCounter)
 		changed = true
+		// TODO: Remove the volume snapshots if any
 	}
 	log.Tracef("Done with all volume refs removes for %s",
 		appInstID)

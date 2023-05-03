@@ -239,6 +239,63 @@ func (status VolumeStatus) LogKey() string {
 	return string(base.VolumeStatusLogType) + "-" + status.Key()
 }
 
+type VolumesSnapshotAction uint8
+
+const (
+	VolumesSnapshotUnspecifiedAction VolumesSnapshotAction = iota
+	VolumesSnapshotCreate
+	VolumesSnapshotRollback
+	VolumesSnapshotDelete
+)
+
+func (action VolumesSnapshotAction) String() string {
+	switch action {
+	case VolumesSnapshotCreate:
+		return "Create"
+	case VolumesSnapshotRollback:
+		return "Rollback"
+	case VolumesSnapshotDelete:
+		return "Delete"
+	default:
+		return "Unspecified"
+	}
+}
+
+type VolumesSnapshotConfig struct {
+	// SnapshotID is the ID of the snapshot
+	SnapshotID string
+	// Action is the action to perform on the snapshot
+	Action VolumesSnapshotAction
+	// VolumeIDs is a list of volumes to snapshot
+	VolumeIDs []uuid.UUID
+	// AppUUID used as a backlink to the app
+	AppUUID uuid.UUID
+	// ConfigID is the ID of the config that created the snapshot
+}
+
+func (config VolumesSnapshotConfig) Key() string {
+	return config.SnapshotID
+}
+
+type VolumesSnapshotStatus struct {
+	// SnapshotID is the ID of the snapshot
+	SnapshotID string
+	// Metadata is a map of volumeID to metadata, depending on the volume type
+	VolumeSnapshotMeta map[string]interface{}
+	// TimeCreated is the time the snapshot was created, reported by FS-specific code
+	TimeCreated time.Time
+	// AppUUID used as a backlink to the app
+	AppUUID uuid.UUID
+	// StatusSetDuring is the action that set the status
+	StatusSetDuring VolumesSnapshotAction
+	// ErrorAndTimeWithSource provides SetErrorNow() and ClearError()
+	ErrorAndTimeWithSource
+}
+
+func (status VolumesSnapshotStatus) Key() string {
+	return status.SnapshotID
+}
+
 // VolumeRefConfig : Reference to a Volume specified separately in the API
 // If a volume is purged (re-created from scratch) it will either have a new
 // UUID or a new generationCount

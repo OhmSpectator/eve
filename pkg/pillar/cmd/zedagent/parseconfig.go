@@ -40,6 +40,9 @@ const (
 	maxVlanID = 4094
 )
 
+var testSnapshot = uuid.Nil
+var testCounter = 0
+
 func parseConfig(getconfigCtx *getconfigContext, config *zconfig.EdgeDevConfig,
 	source configSource) configProcessingRetval {
 
@@ -541,6 +544,34 @@ func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 		appInstance.Service = cfgApp.Service
 		appInstance.CloudInitVersion = cfgApp.CloudInitVersion
 		appInstance.FixedResources.CPUsPinned = cfgApp.Fixedresources.PinCpu
+
+		// Mock for the snapshot testing
+
+		if testSnapshot == uuid.Nil {
+			testSnapshot, _ = uuid.NewV4()
+		}
+
+		// Always create a snapshot config for 1 snapshot
+		cfgApp.Snapshot = &zconfig.SnapshotConfig{
+			MaxSnapshots: 1,
+			Snapshots:    make([]*zconfig.SnapshotDesc, 1),
+		}
+		cfgApp.Snapshot.Snapshots[0] = &zconfig.SnapshotDesc{
+			Id:   testSnapshot.String(),
+			Type: zconfig.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE,
+		}
+
+		// Rollback if the start delay is 10 seconds
+		if cfgApp.StartDelayInSeconds == 10 {
+			cfgApp.Snapshot.RollbackCmd = new(zconfig.InstanceOpsCmd)
+			cfgApp.Snapshot.ActiveSnapshot = testSnapshot.String()
+			cfgApp.Snapshot.RollbackCmd.Counter = 1
+		}
+
+		// Delete the snapshot if the start delay is 11 seconds
+		if cfgApp.StartDelayInSeconds == 11 {
+			cfgApp.Snapshot.Snapshots = cfgApp.Snapshot.Snapshots[:0]
+		}
 
 		// Parse the snapshot related fields
 		if cfgApp.Snapshot != nil {
