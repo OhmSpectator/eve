@@ -98,7 +98,7 @@ type SnapshotStatus struct {
 	// It is reported to the controller, so it can use the proper config to roll back the app instance
 	ConfigVersion UUIDandVersion
 	// Error indicates if snapshot deletion or a rollback to the snapshot failed
-	Error string
+	Error ErrorDescription
 }
 
 // SnapshotConfig configuration of the snapshot, coming from the controller
