@@ -56,26 +56,26 @@ type volumemgrContext struct {
 	pubVerifyImageConfig pubsub.Publication
 	subVerifyImageStatus pubsub.Subscription
 
-	subResolveStatus         pubsub.Subscription
-	pubResolveConfig         pubsub.Publication
-	subContentTreeConfig     pubsub.Subscription
-	pubContentTreeStatus     pubsub.Publication
-	subVolumeConfig          pubsub.Subscription
-	pubVolumeStatus          pubsub.Publication
-	subVolumeRefConfig       pubsub.Subscription
-	pubVolumeRefStatus       pubsub.Publication
-	pubContentTreeToHash     pubsub.Publication
-	pubBlobStatus            pubsub.Publication
-	pubDiskMetric            pubsub.Publication
-	pubAppDiskMetric         pubsub.Publication
-	subDatastoreConfig       pubsub.Subscription
-	subZVolStatus            pubsub.Subscription
-	pubVolumeCreatePending   pubsub.Publication
-	subVolumesSnapshotConfig pubsub.Subscription
-	pubVolumesSnapshotStatus pubsub.Publication
-	diskMetricsTickerHandle  interface{}
-	gc                       *time.Ticker
-	deferDelete              *time.Ticker
+	subResolveStatus        pubsub.Subscription
+	pubResolveConfig        pubsub.Publication
+	subContentTreeConfig    pubsub.Subscription
+	pubContentTreeStatus    pubsub.Publication
+	subVolumeConfig         pubsub.Subscription
+	pubVolumeStatus         pubsub.Publication
+	subVolumeRefConfig      pubsub.Subscription
+	pubVolumeRefStatus      pubsub.Publication
+	pubContentTreeToHash    pubsub.Publication
+	pubBlobStatus           pubsub.Publication
+	pubDiskMetric           pubsub.Publication
+	pubAppDiskMetric        pubsub.Publication
+	subDatastoreConfig      pubsub.Subscription
+	subZVolStatus           pubsub.Subscription
+	pubVolumeCreatePending  pubsub.Publication
+	subVolumesSnapConfig    pubsub.Subscription
+	pubVolumesSnapStatus    pubsub.Publication
+	diskMetricsTickerHandle interface{}
+	gc                      *time.Ticker
+	deferDelete             *time.Ticker
 
 	worker worker.Worker // For background work
 
@@ -529,7 +529,7 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	if err != nil {
 		log.Fatal(err)
 	}
-	ctx.subVolumesSnapshotConfig = subVolumesSnapshotConfig
+	ctx.subVolumesSnapConfig = subVolumesSnapshotConfig
 	subVolumesSnapshotConfig.Activate()
 
 	pubVolumesSnapshotStatus, err := ps.NewPublication(
@@ -542,7 +542,7 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	if err != nil {
 		log.Fatal(err)
 	}
-	ctx.pubVolumesSnapshotStatus = pubVolumesSnapshotStatus
+	ctx.pubVolumesSnapStatus = pubVolumesSnapshotStatus
 
 	if ctx.casClient, err = cas.NewCAS(casClientType); err != nil {
 		err = fmt.Errorf("Run: exception while initializing CAS client: %s", err.Error())
@@ -650,8 +650,8 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 		case change := <-ctx.subZVolStatus.MsgChan():
 			ctx.subZVolStatus.ProcessChange(change)
 
-		case change := <-ctx.subVolumesSnapshotConfig.MsgChan():
-			ctx.subVolumesSnapshotConfig.ProcessChange(change)
+		case change := <-ctx.subVolumesSnapConfig.MsgChan():
+			ctx.subVolumesSnapConfig.ProcessChange(change)
 
 		case <-ctx.gc.C:
 			start := time.Now()

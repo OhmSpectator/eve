@@ -210,19 +210,19 @@ func deleteSnapshot(volumeHandlers volumehandlers.VolumeHandler, meta interface{
 func publishVolumesSnapshotStatus(ctx *volumemgrContext, status *types.VolumesSnapshotStatus) {
 	key := status.Key()
 	log.Functionf("publishVolumesSnapshotStatus(%s)", key)
-	pub := ctx.pubVolumesSnapshotStatus
+	pub := ctx.pubVolumesSnapStatus
 	_ = pub.Publish(key, *status)
 }
 
 func unpublishVolumesSnapshotStatus(ctx *volumemgrContext, status *types.VolumesSnapshotStatus) {
 	key := status.Key()
 	log.Functionf("unpublishVolumesSnapshotStatus(%s)", key)
-	pub := ctx.pubVolumesSnapshotStatus
+	pub := ctx.pubVolumesSnapStatus
 	pub.Unpublish(key)
 }
 
 func lookupVolumesSnapshotStatus(ctx *volumemgrContext, key string) *types.VolumesSnapshotStatus {
-	sub := ctx.pubVolumesSnapshotStatus
+	sub := ctx.pubVolumesSnapStatus
 	st, _ := sub.Get(key)
 	if st == nil {
 		return nil
