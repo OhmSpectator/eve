@@ -1207,11 +1207,7 @@ func PublishAppInfoToZedCloud(ctx *zedagentContext, uuid string,
 			snapInfo.ConfigVersion = snap.ConfigVersion.Version
 			snapInfo.CreateTime = timestamppb.New(snap.TimeCreated)
 			snapInfo.Type = snap.Snapshot.SnapshotType.ConvertToInfoSnapshotType()
-			if snap.Error != "" {
-				snapInfo.SnapErr = &info.ErrorInfo{
-					Description: snap.Error,
-				}
-			}
+			snapInfo.SnapErr = encodeErrorInfo(snap.Error)
 			ReportAppInfo.Snapshots = append(ReportAppInfo.Snapshots, snapInfo)
 		}
 	}

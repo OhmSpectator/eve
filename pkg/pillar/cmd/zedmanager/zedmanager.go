@@ -413,43 +413,65 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 	}
 }
 
+func lookupSnapshotStatusFromAvailable(status *types.AppInstanceStatus, id string) *types.SnapshotStatus {
+	log.Noticef("lookupSnapshotStatusFromAvailable")
+	for _, snap := range status.AvailableSnapshots {
+		if snap.Snapshot.SnapshotID == id {
+			return &snap
+		}
+	}
+	return nil
+}
+
+func setSnapshotStatusError(aiStatus *types.AppInstanceStatus, snapshotID string, errDesc types.ErrorDescription) {
+	snapshotStatus := lookupSnapshotStatusFromAvailable(aiStatus, snapshotID)
+	if snapshotStatus == nil {
+		log.Errorf("setSnapshotStatusError: %s not found", snapshotID)
+		return
+	}
+	snapshotStatus.Error = errDesc
+}
+
 func handleVolumesSnapshotStatusCreate(ctx interface{}, key string, status interface{}) {
 	log.Noticef("handleVolumesSnapshotStatusCreate")
 	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
 	zedmanagerCtx := ctx.(*zedmanagerContext)
-	reportError := false
-	if volumesSnapshotStatus.HasError() {
-		log.Errorf("Failed to handle snapshot %s: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
-		// Do not report error to controller, as it does not expect any result of snapshot creation rather that a success
-		if volumesSnapshotStatus.StatusSetDuring != types.VolumesSnapshotCreate {
-			reportError = true
-		}
-		return
-	}
-	log.Noticef("Snapshot %s created", volumesSnapshotStatus.SnapshotID)
 	appInstanceStatus := lookupAppInstanceStatus(zedmanagerCtx, volumesSnapshotStatus.AppUUID.String())
 	if appInstanceStatus == nil {
 		log.Errorf("handleVolumesSnapshotStatusCreate: AppInstanceStatus not found for %s", volumesSnapshotStatus.AppUUID.String())
 		return
 	}
-	if reportError {
+	if volumesSnapshotStatus.HasError() {
+		if volumesSnapshotStatus.StatusSetDuring == types.VolumesSnapshotCreate {
+			// Do not report error to controller, as it does not expect any result of snapshot creation rather that a success
+			return
+		}
 		appInstanceStatus.Error = volumesSnapshotStatus.Error
 		appInstanceStatus.ErrorTime = volumesSnapshotStatus.ErrorTime
+		setSnapshotStatusError(appInstanceStatus, volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.ErrorDescription)
 		publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 		return
 	}
-	moveSnapshotToAvailable(appInstanceStatus, volumesSnapshotStatus)
+	log.Noticef("Snapshot %s created", volumesSnapshotStatus.SnapshotID)
+	err := moveSnapshotToAvailable(appInstanceStatus, volumesSnapshotStatus)
+	if err != nil {
+		errDesc := types.ErrorDescription{}
+		errDesc.Error = err.Error()
+		log.Errorf("handleVolumesSnapshotStatusCreate: %s", errDesc.Error)
+		setSnapshotStatusError(appInstanceStatus, volumesSnapshotStatus.SnapshotID, errDesc)
+		appInstanceStatus.SetErrorWithSourceAndDescription(errDesc, types.SnapshotStatus{})
+	}
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 }
 
-func moveSnapshotToAvailable(status *types.AppInstanceStatus, volumesSnapshotStatus types.VolumesSnapshotStatus) {
+func moveSnapshotToAvailable(status *types.AppInstanceStatus, volumesSnapshotStatus types.VolumesSnapshotStatus) error {
 	log.Noticef("moveSnapshotToAvailable")
 	var snapToBeMoved *types.SnapshotStatus
 	// Remove from SnapshotsToBeTaken
 	status.SnapshotsToBeTaken, snapToBeMoved = removeSnapshotFromList(status.SnapshotsToBeTaken, volumesSnapshotStatus.SnapshotID)
 	if snapToBeMoved == nil {
 		log.Errorf("moveSnapshotToAvailable: Snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus.SnapshotID)
-		return
+		return fmt.Errorf("snapshot %s not found in SnapshotsToBeTaken", volumesSnapshotStatus.SnapshotID)
 	}
 	// Update the time created from the volumesSnapshotStatus
 	snapToBeMoved.TimeCreated = volumesSnapshotStatus.TimeCreated
@@ -458,6 +480,7 @@ func moveSnapshotToAvailable(status *types.AppInstanceStatus, volumesSnapshotSta
 	// Add to AvailableSnapshots
 	status.AvailableSnapshots = append(status.AvailableSnapshots, *snapToBeMoved)
 	log.Noticef("Snapshot %s moved to AvailableSnapshots", volumesSnapshotStatus.SnapshotID)
+	return nil
 }
 
 func removeSnapshotFromList(snapshotStatuses []types.SnapshotStatus, id string) ([]types.SnapshotStatus, *types.SnapshotStatus) {
@@ -478,29 +501,15 @@ func handleVolumesSnapshotStatusModify(ctx interface{}, key string, status inter
 	// Reaction to a snapshot rollback
 	volumesSnapshotStatus := status.(types.VolumesSnapshotStatus)
 	zedmanagerCtx := ctx.(*zedmanagerContext)
-	reportError := false
-	if volumesSnapshotStatus.HasError() {
-		reportError = true
-		log.Errorf("Snapshot %s failed: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
-	}
 	appInstanceStatus := lookupAppInstanceStatus(zedmanagerCtx, volumesSnapshotStatus.AppUUID.String())
 	if appInstanceStatus == nil {
 		log.Errorf("handleVolumesSnapshotStatusModify: AppInstanceStatus not found for %s", volumesSnapshotStatus.AppUUID.String())
 		return
 	}
-	if reportError {
-		appInstanceStatus.Error = volumesSnapshotStatus.Error
-		appInstanceStatus.ErrorTime = volumesSnapshotStatus.ErrorTime
-		publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
-		return
-	}
 	if volumesSnapshotStatus.HasError() {
 		log.Errorf("Snapshot handling %s failed: %s", volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.Error)
-		availableSnapshot := lookupSnapshotStatusFromAvailable(appInstanceStatus, volumesSnapshotStatus.SnapshotID)
-		if availableSnapshot != nil {
-			availableSnapshot.Error = volumesSnapshotStatus.Error
-		}
-		appInstanceStatus.ErrorAndTimeWithSource.SetErrorWithSourceAndDescription(volumesSnapshotStatus.ErrorDescription, volumesSnapshotStatus.ErrorSourceType)
+		appInstanceStatus.SetErrorWithSourceAndDescription(volumesSnapshotStatus.ErrorDescription, volumesSnapshotStatus.ErrorSourceType)
+		setSnapshotStatusError(appInstanceStatus, volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.ErrorDescription)
 		publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 		return
 	}
@@ -510,19 +519,10 @@ func handleVolumesSnapshotStatusModify(ctx interface{}, key string, status inter
 		errDesc.Error = fmt.Sprintf("Failed to restore and apply config from snapshot %s: %s", volumesSnapshotStatus.SnapshotID, err)
 		log.Errorf(errDesc.Error)
 		errDesc.ErrorTime = time.Now()
-		appInstanceStatus.ErrorAndTimeWithSource.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+		appInstanceStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+		setSnapshotStatusError(appInstanceStatus, volumesSnapshotStatus.SnapshotID, errDesc)
 	}
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
-}
-
-func lookupSnapshotStatusFromAvailable(status *types.AppInstanceStatus, id string) *types.SnapshotStatus {
-	log.Noticef("lookupSnapshotStatusFromAvailable")
-	for _, snap := range status.AvailableSnapshots {
-		if snap.Snapshot.SnapshotID == id {
-			return &snap
-		}
-	}
-	return nil
 }
 
 func restoreAndApplyConfigFromSnapshot(ctx *zedmanagerContext, status types.VolumesSnapshotStatus) error {
@@ -627,13 +627,21 @@ func handleVolumesSnapshotStatusDelete(ctx interface{}, key string, status inter
 		log.Errorf("handleVolumesSnapshotStatusDelete: AppInstanceStatus not found for %s", volumesSnapshotStatus.AppUUID.String())
 		return
 	}
+	if volumesSnapshotStatus.HasError() {
+		appInstanceStatus.Error = volumesSnapshotStatus.Error
+		appInstanceStatus.ErrorTime = volumesSnapshotStatus.ErrorTime
+		setSnapshotStatusError(appInstanceStatus, volumesSnapshotStatus.SnapshotID, volumesSnapshotStatus.ErrorDescription)
+		publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
+		return
+	}
 	err := removeSnapshotFromAvailableSnapshots(appInstanceStatus, volumesSnapshotStatus.SnapshotID)
 	if err != nil {
 		errDesc := types.ErrorDescription{}
 		errDesc.Error = fmt.Sprintf("Failed to remove snapshot %s from available snapshots: %s", volumesSnapshotStatus.SnapshotID, err)
 		log.Errorf(errDesc.Error)
 		errDesc.ErrorTime = time.Now()
-		appInstanceStatus.ErrorAndTimeWithSource.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+		appInstanceStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+		setSnapshotStatusError(appInstanceStatus, volumesSnapshotStatus.SnapshotID, errDesc)
 	}
 	publishAppInstanceStatus(zedmanagerCtx, appInstanceStatus)
 }
