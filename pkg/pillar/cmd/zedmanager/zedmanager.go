@@ -597,6 +597,17 @@ func deserializeConfig(file string) (*types.AppInstanceConfig, error) {
 	return &appInstanceConfig, nil
 }
 
+func deleteConfigFile(file string) {
+	log.Noticef("deleteConfigFile")
+	if _, err := os.Stat(file); os.IsNotExist(err) {
+		// file does not exist
+		return
+	}
+	if err := os.Remove(file); err != nil {
+		log.Errorf("deleteConfigFile: Remove failed %s", err)
+	}
+}
+
 func getSnapshotStatusFromAvailableSnapshots(status *types.AppInstanceStatus, id string) *types.SnapshotStatus {
 	log.Noticef("getSnapshotStatusFromAvailableSnapshots")
 	for _, snap := range status.AvailableSnapshots {
@@ -1100,6 +1111,9 @@ func triggerSnapshotDeletion(snapshotsToBeDeleted []types.SnapshotDesc, ctx *zed
 			log.Noticef("It has already been triggered, so deleting the config and notifying volumemanager")
 			unpublishVolumesSnapshotConfig(ctx, volumesSnapshotConfig)
 		}
+		// Delete the serialized config, if it exists
+		configFile := getConfigFilenameForSnapshot(snapshot.SnapshotID)
+		deleteConfigFile(configFile)
 		log.Noticef("Deleting snapshot from the App status")
 		deleteSnapshotFromStatus(status, snapshot.SnapshotID)
 	}
