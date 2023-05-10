@@ -5,6 +5,7 @@ package types
 
 import (
 	"fmt"
+	"github.com/lf-edge/eve/api/go/info"
 	"net"
 	"time"
 
@@ -59,6 +60,15 @@ func (s SnapshotType) String() string {
 		return "SnapshotTypeAppUpdate"
 	default:
 		return fmt.Sprintf("Unknown SnapshotType %d", s)
+	}
+}
+
+func (s SnapshotType) ConvertToInfoSnapshotType() info.SnapshotType {
+	switch s {
+	case SnapshotTypeAppUpdate:
+		return info.SnapshotType_SNAPSHOT_TYPE_APP_UPDATE
+	default:
+		return info.SnapshotType_SNAPSHOT_TYPE_UNSPECIFIED
 	}
 }
 
