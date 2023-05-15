@@ -740,8 +740,10 @@ func handleModify(ctxArg interface{}, key string,
 		needRestart = false
 	}
 
-	if config.RestartCmd.Counter != oldConfig.RestartCmd.Counter ||
-		config.LocalRestartCmd.Counter != oldConfig.LocalRestartCmd.Counter {
+	// We need to perform a strict check for greater than because the counter might decrease during a snapshot rollback
+	// and the application of the old config.
+	if config.RestartCmd.Counter > oldConfig.RestartCmd.Counter ||
+		config.LocalRestartCmd.Counter > oldConfig.LocalRestartCmd.Counter {
 
 		log.Functionf("handleModify(%v) for %s restartcmd from %d/%d to %d/%d "+
 			"needRestart: %v",
@@ -771,8 +773,10 @@ func handleModify(ctxArg interface{}, key string,
 		return
 	}
 
-	if config.PurgeCmd.Counter != oldConfig.PurgeCmd.Counter ||
-		config.LocalPurgeCmd.Counter != oldConfig.LocalPurgeCmd.Counter {
+	// We need to perform a strict check for greater than because the counter might decrease during a snapshot rollback
+	// and the application of the old config.
+	if config.PurgeCmd.Counter > oldConfig.PurgeCmd.Counter ||
+		config.LocalPurgeCmd.Counter > oldConfig.LocalPurgeCmd.Counter {
 		log.Functionf("handleModify(%v) for %s purgecmd from %d/%d to %d/%d "+
 			"needPurge: %v",
 			config.UUIDandVersion, config.DisplayName,
