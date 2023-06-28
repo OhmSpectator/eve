@@ -520,6 +520,7 @@ func parseAppInstanceConfig(getconfigCtx *getconfigContext,
 
 		appInstance.UUIDandVersion.UUID, _ = uuid.FromString(cfgApp.Uuidandversion.Uuid)
 		appInstance.UUIDandVersion.Version = cfgApp.Uuidandversion.Version
+		log.Noticef("@ohm: appInstanceConfig version: %v", appInstance.UUIDandVersion.Version)
 		appInstance.DisplayName = cfgApp.Displayname
 		appInstance.Activate = cfgApp.Activate
 
@@ -1600,6 +1601,7 @@ func parseVolumeRefList(volumeRefConfigList []types.VolumeRefConfig,
 	for _, volumeRef := range volumeRefs {
 		volume := new(types.VolumeRefConfig)
 		volume.VolumeID, _ = uuid.FromString(volumeRef.Uuid)
+		log.Noticef("@ohm: parseVolumeRefList: VolumeID %s", volume.VolumeID)
 		volume.GenerationCounter = volumeRef.GenerationCount
 		volume.RefCount = 1
 		volume.MountDir = volumeRef.GetMountDir()

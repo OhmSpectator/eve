@@ -53,6 +53,7 @@ func MaybeAddDomainConfig(ctx *zedmanagerContext,
 
 	dc.DiskConfigList = make([]types.DiskConfig, 0, len(aiStatus.VolumeRefStatusList))
 	for _, vrc := range aiConfig.VolumeRefConfigList {
+		log.Noticef("MaybeAddDomainConfig: add to domain config VolumeRefConfig %s", vrc.VolumeID)
 		vrs := getVolumeRefStatusFromAIStatus(&aiStatus, vrc)
 		if vrs == nil {
 			log.Errorf("Missing VolumeRefStatus for "+

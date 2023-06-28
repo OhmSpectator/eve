@@ -57,6 +57,7 @@ func parseEdgeNodeDisks(config *zconfig.DisksConfig) types.EdgeNodeDisks {
 		}
 		diskConfig.Config = types.EdgeNodeDiskConfigType(el.DiskConfig)
 		disks.Disks = append(disks.Disks, *diskConfig)
+		log.Noticef("@ohm: parseEdgeNodeDisks: diskConfig: %+v", diskConfig)
 	}
 	for _, el := range config.Children {
 		disks.Children = append(disks.Children, parseEdgeNodeDisks(el))
