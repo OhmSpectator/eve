@@ -263,6 +263,13 @@ The default configuration file is located in the `/etc/` directory of the
 container image. But it can be overridden by the user by placing the
 configuration file in the `/persist/memory-monitor/` directory.
 
+To copy the default configuration file to the `/persist/memory-monitor/` for
+editing, run the following command:
+
+```shell
+eve exec memory-monitor cp /etc/memory-monitor.conf /persist/memory-monitor/
+```
+
 To use the custom configuration values, the user should restart the memory
 monitor tool by sending the `SIGHUP` signal to the memory monitor process. It
 can be done by running the following command:
@@ -283,6 +290,7 @@ The configuration file should contain the following fields:
 CGROUP_PILLAR_THRESHOLD_MB=<threshold in MB>
 CGROUP_EVE_THRESHOLD_PERCENT=<threshold in percent>
 PROC_ZEDBOX_THRESHOLD_MB=<threshold in MB>
+PSI_THRESHOLD_PERCENT=<threshold in percent>
 ```
 
 The fields are:
@@ -297,6 +305,9 @@ The fields are:
 * `PROC_ZEDBOX_THRESHOLD_MB`: The threshold in megabytes for the Resident Set
   Size (RSS) of the zedbox process. It will be compared every 5 second to the
   RSS of the zedbox process, read from the `/proc/<zedbox_pid>/statm` file.
+* `PSI_THRESHOLD_PERCENT`: The threshold for percentage of time at least one
+  process in the system is stalled on memory reclaim for the last 10 seconds.
+  To be short, it's a threshold for the "some avg10" value of the psi metrics.
 
 If some of the fields are missing in the configuration file, the default values
 will be used. The default values are:

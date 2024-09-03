@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -128,6 +129,23 @@ unsigned long strtoudec(const char *str, bool *error) {
     *error = false;
     return val;
 }
+
+float strtofdec(const char *str, bool *error) {
+    char *endptr;
+    errno = 0;
+    float val = strtof(str, &endptr);
+    if ( (errno == ERANGE && (val == HUGE_VALF || val == -HUGE_VALF)) || // overflow or underflow
+         (errno != 0 && val == 0) || // conversion error
+         (*endptr != '\0' && *endptr != '\n') || // trailing characters
+         (endptr == str) ) { // no digits were found
+        syslog(LOG_ERR, "Invalid value: %s", str);
+        *error = true;
+        return HUGE_VALF;
+    }
+    *error = false;
+    return val;
+}
+
 int convert_mb_to_bytes(unsigned long mb, unsigned long *bytes_out) {
     if (__builtin_umull_overflow(mb, 1024 * 1024, bytes_out)) {
         syslog(LOG_ERR, "Invalid value: %lu MB", mb);
