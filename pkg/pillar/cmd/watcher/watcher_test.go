@@ -272,7 +272,7 @@ func TestGoroutinesMonitorNoLeak(t *testing.T) {
 	ctx.GRLDParams.Set(goroutinesThreshold, checkInterval, checkStatsFor, keepStatsFor, cooldownPeriod)
 	ctx.GRLDParams.MakeStoppable()
 
-	go goroutinesMonitor(ctx)
+	go GoroutinesMonitor(ctx)
 	defer ctx.GRLDParams.Stop()
 
 	timeStart := time.Now()
@@ -319,7 +319,7 @@ func TestGoroutinesMonitorLeak(t *testing.T) {
 	ctx.GRLDParams.Set(goroutinesThreshold, checkInterval, checkStatsFor, keepStatsFor, cooldownPeriod)
 	ctx.GRLDParams.MakeStoppable()
 
-	go goroutinesMonitor(ctx)
+	go GoroutinesMonitor(ctx)
 	defer ctx.GRLDParams.Stop()
 
 	timeStart := time.Now()
@@ -373,7 +373,7 @@ func TestGoroutinesMonitorUpdateParamsKeepStatsDecrease(t *testing.T) {
 	ctx.GRLDParams.Set(goroutinesThreshold, checkInterval, checkStatsFor, keepStatsFor, cooldownPeriod)
 	ctx.GRLDParams.MakeStoppable()
 
-	go goroutinesMonitor(ctx)
+	go GoroutinesMonitor(ctx)
 	defer ctx.GRLDParams.Stop()
 
 	// Wait until we fill the stats slice
@@ -406,7 +406,7 @@ func TestGoroutinesMonitorUpdateParamsKeepStatsDecrease(t *testing.T) {
 	// Check if the log output contains the expected messages
 	for _, expectedMsg := range expectedMsgs {
 		if !strings.Contains(string(output), expectedMsg) {
-			t.Errorf("Expected log output to contain '%s', but got '%s'", expectedMsg, output)
+			t.Errorf("Expected log output to contain '%s'", expectedMsg)
 		}
 	}
 }
@@ -438,7 +438,7 @@ func TestGoroutinesMonitorUpdateParamsKeepStatsIncrease(t *testing.T) {
 	ctx.GRLDParams.Set(goroutinesThreshold, checkInterval, checkStatsFor, keepStatsFor, cooldownPeriod)
 	ctx.GRLDParams.MakeStoppable()
 
-	go goroutinesMonitor(ctx)
+	go GoroutinesMonitor(ctx)
 	defer ctx.GRLDParams.Stop()
 
 	// Wait until we fill the stats slice
@@ -494,7 +494,7 @@ func TestGoroutineMonitorStops(t *testing.T) {
 	ctx.GRLDParams.Set(goroutinesThreshold, checkInterval, checkStatsFor, keepStatsFor, cooldownPeriod)
 	ctx.GRLDParams.MakeStoppable()
 
-	go goroutinesMonitor(ctx)
+	go GoroutinesMonitor(ctx)
 
 	// Let the monitor run for a while
 	time.Sleep(keepStatsFor * 2)
@@ -542,7 +542,7 @@ func TestGoroutineMonitorRunsFineUnstoppable(t *testing.T) {
 	ctx := &watcherContext{}
 	ctx.GRLDParams.Set(goroutinesThreshold, checkInterval, checkStatsFor, keepStatsFor, cooldownPeriod)
 
-	go goroutinesMonitor(ctx)
+	go GoroutinesMonitor(ctx)
 
 	time.Sleep(keepStatsFor * 2)
 
@@ -560,4 +560,183 @@ func TestGoroutineMonitorRunsFineUnstoppable(t *testing.T) {
 		}
 	}
 
+}
+
+func eatMemory(cancelCh chan struct{}) {
+	allocatedChunks := make([][]byte, 0)
+	for {
+		select {
+		case <-cancelCh:
+			return
+		default:
+			chunk := make([]byte, os.Getpagesize())
+			allocatedChunks = append(allocatedChunks, chunk)
+			time.Sleep(1 * time.Millisecond)
+		}
+	}
+}
+
+func TestMemoryLeakDetectorStarts(t *testing.T) {
+	backupOut := logger.Out
+	backupLevel := logger.Level
+	// Create a pipe to capture log output
+	r, w, _ := os.Pipe()
+	logger.SetOutput(w)
+	logger.SetLevel(logrus.TraceLevel)
+	defer func() {
+		logger.SetOutput(backupOut)
+		logger.SetLevel(backupLevel)
+	}()
+
+	analysisInterval := 100 * time.Millisecond
+	processInterval := 5 * time.Millisecond
+	smoothingProbeCount := 5
+	slopeThreshold := 1000.0
+
+	// Create context with default parameters
+	ctx := &watcherContext{}
+	ctx.IMMParams.Set(analysisInterval, processInterval, slopeThreshold, smoothingProbeCount, true)
+	ctx.IMMParams.MakeStoppable()
+
+	go InternalMemoryMonitor(ctx)
+
+	// Let it collect some samples
+	time.Sleep(analysisInterval * 3)
+
+	// Stop the monitor
+	ctx.IMMParams.Stop()
+
+	// Wait for several check intervals to allow the monitor to stop
+	time.Sleep(processInterval * 100)
+
+	// Close the pipe
+	_ = w.Close()
+
+	// Read the log output
+	output, _ := io.ReadAll(r)
+
+	msgStart := "Starting memory leak detector"
+	if !strings.Contains(string(output), msgStart) {
+		t.Errorf("Expected log output to contain '%s'", msgStart)
+	}
+}
+
+func TestMemoryLeakDetectorDetects(t *testing.T) {
+	backupOut := logger.Out
+	backupLevel := logger.Level
+	// Create a pipe to capture log output
+	r, w, _ := os.Pipe()
+	logger.SetOutput(w)
+	logger.SetLevel(logrus.TraceLevel)
+	defer func() {
+		logger.SetOutput(backupOut)
+		logger.SetLevel(backupLevel)
+	}()
+
+	interval := 100 * time.Millisecond
+	processInterval := 5 * time.Millisecond
+	sampleSize := 5
+	threshold := 1000.0
+
+	// Create context with default parameters
+	ctx := &watcherContext{}
+	ctx.IMMParams.Set(interval, processInterval, threshold, sampleSize, true)
+	ctx.IMMParams.MakeStoppable()
+
+	go InternalMemoryMonitor(ctx)
+
+	memLeakCh := make(chan struct{})
+	go eatMemory(memLeakCh)
+
+	// Let it collect some samples
+	time.Sleep(interval * 100)
+
+	// Stop the monitor
+	ctx.IMMParams.Stop()
+	memLeakCh <- struct{}{}
+
+	// Wait for several check intervals to allow the monitor to stop
+	time.Sleep(processInterval * 100)
+
+	// Close the pipe
+	_ = w.Close()
+	// Read the log output
+	output, _ := io.ReadAll(r)
+
+	msgLeak := "Potential memory leak detected"
+	for _, msg := range []string{msgLeak} {
+		if !strings.Contains(string(output), msg) {
+			t.Errorf("Expected log output to contain '%s'", msg)
+			t.Logf("Output: %s", string(output))
+		}
+	}
+
+	t.Logf("Output: %s", string(output))
+
+}
+
+func TestMemoryLeakDetectorHandlesHugeFile(t *testing.T) {
+	backupOut := logger.Out
+	backupLevel := logger.Level
+	// Create a pipe to capture log output
+	r, w, _ := os.Pipe()
+	logger.SetOutput(w)
+	logger.SetLevel(logrus.TraceLevel)
+	defer func() {
+		logger.SetOutput(backupOut)
+		logger.SetLevel(backupLevel)
+	}()
+
+	probingInterval := 1 * time.Millisecond
+	analysisInterval := probingInterval * 120 // as we have in the default config
+	smoothingProbesCount := 12                // as we have in the default config
+	threshold := 4096.0                       // as we have in the default config
+
+	// Create context with default parameters
+	ctx := &watcherContext{}
+	ctx.IMMParams.Set(analysisInterval, probingInterval, threshold, smoothingProbesCount, true)
+	ctx.IMMParams.MakeStoppable()
+
+	go InternalMemoryMonitor(ctx)
+
+	memLeakCh := make(chan struct{})
+	go eatMemory(memLeakCh)
+
+	// Let it collect 25000 samples ,which creates ~1Mb of data (max size we keep in file)
+	time.Sleep(probingInterval * 25000)
+
+	// Stop the monitor
+	ctx.IMMParams.Stop()
+	memLeakCh <- struct{}{}
+
+	// Wait for several check intervals to allow the monitor to stop
+	time.Sleep(probingInterval * 100)
+
+	// Close the pipe
+	_ = w.Close()
+	// Read the log output
+	output, _ := io.ReadAll(r)
+
+	msgLeak := "Potential memory leak detected"
+	for _, msg := range []string{msgLeak} {
+		if !strings.Contains(string(output), msg) {
+			t.Errorf("Expected log output to contain '%s'", msg)
+			t.Logf("Output: %s", string(output))
+		}
+	}
+
+	t.Logf("Output: %s", string(output))
+}
+
+func BenchmarkMovingAverage(b *testing.B) {
+	data := make([]int, 1000)
+	for i := 0; i < 1000; i++ {
+		data[i] = i
+	}
+	windowSize := 10
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		movingAverage(data, windowSize)
+	}
 }
