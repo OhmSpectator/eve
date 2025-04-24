@@ -13,6 +13,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -916,5 +918,19 @@ func (msrv *Msrv) handleNetworkStatusMetrics() func(http.ResponseWriter, *http.R
 		w.Header().Add("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write(resp)
+	}
+}
+
+// handleReverseProxy
+func (msrv *Msrv) reverseProxy(target *url.URL) func(http.ResponseWriter, *http.Request) {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ErrorHandler = func(rw http.ResponseWriter, r *http.Request, err error) {
+		msrv.Log.Errorf("httputil proxy error: %v", err)
+		rw.WriteHeader(http.StatusBadGateway)
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Host = target.Host
+		proxy.ServeHTTP(w, r)
 	}
 }

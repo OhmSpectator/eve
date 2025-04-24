@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/gob"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -711,6 +712,9 @@ func (msrv *Msrv) MakeMetadataHandler() http.Handler {
 			r.Get("/download/{patch}/{file}", msrv.handlePatchFileDownload())
 		})
 	})
+
+	target, _ := url.Parse("http://localhost:9100")
+	r.HandleFunc("/metrics", msrv.reverseProxy(target))
 
 	r.Get("/eve/app-custom-blobs", msrv.handleAppCustomBlobs())
 
