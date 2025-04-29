@@ -21,6 +21,12 @@ const (
 	appUUIDContextKey
 )
 
+type PrometheusMetricsConf struct {
+	RPS         int
+	Burst       int
+	IdleTimeout time.Duration
+}
+
 // withPatchEnvelopesByIP is a middleware for Patch Envelopes which adds
 // to a context patchEnvelope variable containing available patch envelopes
 // for given IP address (it gets resolved to app instance UUID)
@@ -61,7 +67,7 @@ type ipEntry struct {
 // withRateLimiterPerIP is a middleware that limits incoming HTTP requests per IP address.
 // It enforces a rate limit with the given RPS and burst size, and automatically removes
 // inactive IPs after the specified idle timeout.
-func withRateLimiterPerIP(rps float64, burst int, idleTimeout time.Duration) func(http.Handler) http.Handler {
+func (msrv *Msrv) withRateLimiterPerIP() func(http.Handler) http.Handler {
 	var (
 		mu       sync.Mutex
 		visitors = make(map[string]*ipEntry)
@@ -74,7 +80,7 @@ func withRateLimiterPerIP(rps float64, burst int, idleTimeout time.Duration) fun
 			mu.Lock()
 			now := time.Now()
 			for ip, v := range visitors {
-				if now.Sub(v.lastSeen) > idleTimeout {
+				if now.Sub(v.lastSeen) > msrv.pmc.IdleTimeout {
 					delete(visitors, ip)
 				}
 			}
@@ -88,9 +94,15 @@ func withRateLimiterPerIP(rps float64, burst int, idleTimeout time.Duration) fun
 
 		v, exists := visitors[ip]
 		if !exists {
-			limiter := rate.NewLimiter(rate.Limit(rps), burst)
+			limiter := rate.NewLimiter(rate.Limit(msrv.pmc.RPS), msrv.pmc.Burst)
 			visitors[ip] = &ipEntry{limiter: limiter, lastSeen: time.Now()}
 			return limiter
+		}
+
+		// Update the last seen time
+		if v.limiter.Limit() != rate.Limit(msrv.pmc.RPS) || v.limiter.Burst() != msrv.pmc.Burst {
+			v.limiter.SetLimit(rate.Limit(msrv.pmc.RPS))
+			v.limiter.SetBurst(msrv.pmc.Burst)
 		}
 
 		v.lastSeen = time.Now()
