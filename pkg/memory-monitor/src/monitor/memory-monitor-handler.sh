@@ -46,6 +46,13 @@ cleanup() {
   if [ -f "$PSI_FILE" ]; then
     total_size=$((total_size - $(stat -c %s "$PSI_FILE") / 1024))
   fi
+  # Subtract the size of the memory_usage.csv* files (if they exist) as they are created and
+  # deleted by the internal Pillar memory monitor
+  for mem_usage_file in memory_usage.csv*; do
+    if [ -f "$mem_usage_file" ]; then
+      total_size=$((total_size - $(stat -c %s "$mem_usage_file") / 1024))
+    fi
+  done
   while [ "$total_size" -gt "$MAX_OUTPUT_SIZE_KB" ]; do
     found_archives=$(find . -type f -name "*.tar.gz" -print | sort -n)
     if [ -z "$found_archives" ]; then

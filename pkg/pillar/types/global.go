@@ -280,10 +280,10 @@ const (
 	GoroutineLeakDetectionCooldownMinutes GlobalSettingKey = "goroutine.leak.detection.cooldown.minutes"
 
 	// Internal Memory Monitor settings
-	// InternalMemoryMonitorAnalysisPeriodMinutes - how often to analyze memory usage
-	InternalMemoryMonitorAnalysisPeriodMinutes GlobalSettingKey = "internal-memory-monitor.analysis.period.minutes"
-	// InternalMemoryMonitorSmoothingPeriodSeconds - on which period to smooth the memory usage
-	InternalMemoryMonitorSmoothingPeriodSeconds GlobalSettingKey = "internal-memory-monitor.smoothing.period.seconds"
+	// InternalMemoryMonitorAnalysisWindowMinutes - how often to analyze memory usage
+	InternalMemoryMonitorAnalysisWindowMinutes GlobalSettingKey = "internal-memory-monitor.analysis.window.minutes"
+	// InternalMemoryMonitorSmoothingWindowSeconds - on which period to smooth the memory usage
+	InternalMemoryMonitorSmoothingWindowSeconds GlobalSettingKey = "internal-memory-monitor.smoothing.window.seconds"
 	// InternalMemoryMonitorProbingIntervalSeconds - how often to probe memory usage
 	InternalMemoryMonitorProbingIntervalSeconds GlobalSettingKey = "internal-memory-monitor.probing.interval.seconds"
 	// InternalMemoryMonitorSlopeThreshold - threshold for the slope of memory usage growth (bytes/sec)
@@ -1023,12 +1023,12 @@ func NewConfigItemSpecMap() ConfigItemSpecMap {
 	configItemSpecMap.AddIntItem(GoroutineLeakDetectionCooldownMinutes, 5, 1, 0xFFFFFFFF)
 
 	// Internal Memory Monitoring section
-	configItemSpecMap.AddIntItem(InternalMemoryMonitorAnalysisPeriodMinutes, 10, 1, 0xFFFFFFFF)
-	configItemSpecMap.AddIntItem(InternalMemoryMonitorSmoothingPeriodSeconds, 60, 5, 0xFFFFFFFF)
+	configItemSpecMap.AddIntItem(InternalMemoryMonitorAnalysisWindowMinutes, 10, 1, 0xFFFFFFFF)
+	configItemSpecMap.AddIntItem(InternalMemoryMonitorSmoothingWindowSeconds, 300, 5, 0xFFFFFFFF)
 	configItemSpecMap.AddIntItem(InternalMemoryMonitorProbingIntervalSeconds, 5, 1, 0xFFFFFFFF)
-	// 512 bytes/second gives ~42 MB/day. 4096 bytes/second gives ~335 MB/day.
-	// Threshold is used on a AnalysisPeriod basis. Threshold / 5 is used on all data (not a rolling period).
-	configItemSpecMap.AddIntItem(InternalMemoryMonitorSlopeThreshold, 4096, 512, 0xFFFFFFFF)
+	// 208 bytes/sec is ~17.14 MB/day or ~120 Mb/week. Experiments show that 120 Mb leak can be
+	// critical for EVE.
+	configItemSpecMap.AddIntItem(InternalMemoryMonitorSlopeThreshold, 208, 128, 0xFFFFFFFF)
 	configItemSpecMap.AddBoolItem(InternalMemoryMonitorEnabled, true)
 
 	// Add Bool Items

@@ -10,7 +10,7 @@ import (
 	"github.com/lf-edge/eve/pkg/pillar/agentlog"
 	"github.com/lf-edge/eve/pkg/pillar/types"
 	"gonum.org/v1/gonum/stat"
-	"io"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -21,21 +21,22 @@ import (
 )
 
 var (
-	heapReachedThreshold  int
-	rssReachedThreshold   int
-	entireSetAnalyzedLast time.Time
+	heapReachedThreshold       int
+	rssReachedThreshold        int
+	lastEntireSetAnalyzedIndex int
 )
 
 const (
 	// bytesPerLineInFile is an approximation of the number of bytes per stat in the file.
-	// The line usually looks like this: 2025-04-22T13:13:15Z,42450944,120524800,0
-	bytesPerLineInFile = 42
+	// The line usually looks like this: 2025-04-22T13:13:15Z,42450944,120524800,0.000
+	bytesPerLineInFile = 46
+	maxStatsFileSize   = 1024 * 1024 // 1MB
 )
 
 // InternalMemoryMonitorParams is a struct that holds the parameters for the memory monitor.
 type InternalMemoryMonitorParams struct {
 	mutex               sync.Mutex
-	analysisPeriod      time.Duration
+	analysisWindow      time.Duration
 	smoothingProbeCount int
 	probingInterval     time.Duration
 	slopeThreshold      float64
@@ -45,9 +46,9 @@ type InternalMemoryMonitorParams struct {
 	stop    context.CancelFunc
 }
 
-func (immp *InternalMemoryMonitorParams) Set(analysisPeriod, probingInterval time.Duration, slopeThreshold float64, smoothingProbeCount int, isActive bool) {
+func (immp *InternalMemoryMonitorParams) Set(analysisWindow, probingInterval time.Duration, slopeThreshold float64, smoothingProbeCount int, isActive bool) {
 	immp.mutex.Lock()
-	immp.analysisPeriod = analysisPeriod
+	immp.analysisWindow = analysisWindow
 	immp.smoothingProbeCount = smoothingProbeCount
 	immp.probingInterval = probingInterval
 	immp.slopeThreshold = slopeThreshold
@@ -58,7 +59,7 @@ func (immp *InternalMemoryMonitorParams) Set(analysisPeriod, probingInterval tim
 func (immp *InternalMemoryMonitorParams) Get() (time.Duration, time.Duration, float64, int, bool) {
 	immp.mutex.Lock()
 	defer immp.mutex.Unlock()
-	return immp.analysisPeriod, immp.probingInterval, immp.slopeThreshold, immp.smoothingProbeCount, immp.isActive
+	return immp.analysisWindow, immp.probingInterval, immp.slopeThreshold, immp.smoothingProbeCount, immp.isActive
 }
 
 func (immp *InternalMemoryMonitorParams) MakeStoppable() {
@@ -92,6 +93,7 @@ func (immp *InternalMemoryMonitorParams) Stop() {
 	}
 }
 
+// TODO Should we use a faster average instead of median?
 // medianFilter applies a median filter to a slice of values. windowSize should be odd.
 // This reduces the impact of local spikes.
 func medianFilter(values []uint64, windowSize int) []uint64 {
@@ -144,396 +146,209 @@ func getRSS() (uint64, error) {
 	return rss * pageSize, nil
 }
 
-func controlFileSize(filename string, threshold int64) {
-	const linesToRemove = 12
+type memType string
 
-	// Keep trimming until size <= threshold (or until we can't trim anymore).
-	for {
+const (
+	memGoHeapInuse memType = "heap"
+	memOsRss       memType = "rss"
+)
 
-		// Open the file
-		file, err := os.OpenFile(filename, os.O_RDWR, 0644)
-		if err != nil {
-			log.Warnf("failed to open file: %v", err)
-			return
-		}
-
-		fi, err := file.Stat()
-		if err != nil {
-			log.Warnf("failed to get file info: %v", err)
-			file.Close()
-			return
-		}
-
-		// If file size is okay, done
-		if fi.Size() <= threshold {
-			file.Close()
-			return
-		}
-
-		fileDir := filepath.Dir(filename)
-
-		// Create a temporary output file
-		tmp, err := os.CreateTemp(fileDir, "truncated-*.csv")
-		if err != nil {
-			log.Warnf("failed to create temp file: %v", err)
-			file.Close()
-			return
-		}
-
-		renamed := false
-		deferCleanup := func() {
-			tmp.Close()
-			if !renamed {
-				os.Remove(tmp.Name())
-			}
-		}
-
-		// We’ll use a named cleanup so we can call it as needed.
-		// We won't just do `defer deferCleanup()` right away,
-		// because we might close early.
-		// Instead, call `deferCleanup()` on any return path.
-
-		reader := csv.NewReader(file)
-		writer := csv.NewWriter(tmp)
-
-		// 1) read header
-		header, err := reader.Read()
-		if err != nil {
-			log.Warnf("failed to read header: %v", err)
-			file.Close()
-			deferCleanup()
-			return
-		}
-
-		if err := writer.Write(header); err != nil {
-			log.Warnf("failed to write header: %v", err)
-			file.Close()
-			deferCleanup()
-			return
-		}
-
-		// 2) skip lines
-		for i := 0; i < linesToRemove; i++ {
-			_, err := reader.Read()
-			if err == io.EOF {
-				// End of file, nothing else to skip
-				break
-			}
-			if err != nil {
-				log.Warnf("error reading csv: %v", err)
-				file.Close()
-				deferCleanup()
-				return
-			}
-		}
-
-		// 3) copy everything else
-		for {
-			record, err := reader.Read()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				log.Warnf("error reading csv: %v", err)
-				file.Close()
-				deferCleanup()
-				return
-			}
-			if err = writer.Write(record); err != nil {
-				log.Warnf("error writing csv: %v", err)
-				file.Close()
-				deferCleanup()
-				return
-			}
-		}
-
-		// Flush writer
-		writer.Flush()
-		if err := writer.Error(); err != nil {
-			log.Warnf("error flushing csv writer: %v", err)
-			file.Close()
-			deferCleanup()
-			return
-		}
-
-		// Close original file
-		if err := file.Close(); err != nil {
-			log.Warnf("error closing original file: %v", err)
-			deferCleanup()
-			return
-		}
-
-		// Close temp file
-		if err := tmp.Close(); err != nil {
-			log.Warnf("error closing temp file: %v", err)
-			return
-		}
-
-		// Overwrite original with truncated version
-		if err := os.Rename(tmp.Name(), filename); err != nil {
-			log.Warnf("error renaming temp file: %v", err)
-			os.Remove(tmp.Name()) // we can do an explicit remove here
-			return
-		}
-
-		// Mark rename success, so we don't remove the file in defer.
-		renamed = true
-
-		// Continue the loop to see if we need more trimming.
-		// If we want to do it in multiple passes (again and again),
-		// just loop around. If removing lines once is enough, then
-		// we break here instead.
-	}
+type leakDesc struct {
+	lType       memType
+	lSlope      float64
+	windowSize  int
+	isEntireSet bool
 }
-
-type usageType string
-
-const (
-	heapUsage usageType = "heap"
-	rssUsage  usageType = "rss"
-)
-
-type suspectLeakType string
-
-const (
-	heapOneWindow suspectLeakType = "heapOneWindow"
-	rssOneWindow  suspectLeakType = "rssOneWindow"
-	heapEntireSet suspectLeakType = "heapEntireSet"
-	rssEntireSet  suspectLeakType = "rssEntireSet"
-)
 
 type memUsageProbe struct {
-	time   time.Time
-	usages map[usageType]uint64
-	leaks  []suspectLeakType
+	time           time.Time
+	usages         map[memType]uint64
+	leaks          []leakDesc
+	leakScore      float64
+	leakScoreDebug float64
 }
-
-// writeMemoryUsage writes out times, memUsage, and redDots as CSV.
-// There's no repeated field name, so it's smaller than typical JSON.
-// Then you can load this CSV in any interactive plotting tool.
-//func writeMemoryUsage(timeNow time.Time, memUsage []memoryUsage, outPath string) {
-//
-//	// Measure the time taken for the write operation
-//
-//	// Open file in append mode, create if it doesn't exist
-//	file, err := os.OpenFile(outPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-//	if err != nil {
-//		fmt.Printf("Error opening file: %v\n", err)
-//		return
-//	}
-//	defer controlFileSize(outPath, 1024*1024) // 1MB
-//	defer file.Close()
-//
-//	w := csv.NewWriter(file)
-//
-//	// Check if file is empty to write header
-//	fileInfo, err := file.Stat()
-//	if err != nil {
-//		fmt.Printf("Error getting file info: %v\n", err)
-//		return
-//	}
-//
-//	if fileInfo.Size() == 0 {
-//		// Form header as "time,memory_usage_name1, memory_usage_name2, ... ,red"
-//		header := make([]string, 0, len(memUsage)+2)
-//		header = append(header, "time")
-//		for _, mu := range memUsage {
-//			header = append(header, mu.name)
-//		}
-//		header = append(header, "red")
-//		if err = w.Write(header); err != nil {
-//			fmt.Printf("Error writing header: %v\n", err)
-//			return
-//		}
-//	}
-//
-//	record := make([]string, 0, len(memUsage)+2)
-//	record = append(record, timeNow.Format(time.RFC3339))
-//	for _, mu := range memUsage {
-//		record = append(record, strconv.FormatUint(mu.usage, 10))
-//	}
-//	record = append(record, "0") // Default red value
-//
-//	// Write the data
-//	if err = w.Write(record); err != nil {
-//		fmt.Printf("Error writing record: %v\n", err)
-//		return
-//	}
-//
-//	// Flush any buffered data to disk
-//	w.Flush()
-//	if err = w.Error(); err != nil {
-//		fmt.Printf("Error flushing CSV writer: %v\n", err)
-//		return
-//	}
-//
-//	fmt.Printf("Data exported to %s\n", outPath)
-//}
-
-// markLastUsageRed marks the last usage in the file as red.
-//func markLastUsageRed(filename string) {
-//	// Open the file
-//	file, err := os.OpenFile(filename, os.O_RDWR, 0644)
-//	if err != nil {
-//		log.Warnf("failed to open file: %v", err)
-//		return
-//	}
-//	defer file.Close()
-//
-//	// Seek to the end of the file
-//	offset, err := file.Seek(0, io.SeekEnd)
-//	if err != nil {
-//		fmt.Println("Error seeking file:", err)
-//		return
-//	}
-//
-//	// Read the file backwards until we find the last "0"
-//	// and replace it with "1"
-//	for {
-//		offset--
-//		if offset < 0 {
-//			fmt.Println("Reached beginning of file without finding 0")
-//			return
-//		}
-//		_, err = file.Seek(offset, io.SeekStart)
-//		if err != nil {
-//			fmt.Println("Error seeking file:", err)
-//			return
-//		}
-//		b := make([]byte, 1)
-//		_, err = file.Read(b)
-//		if err != nil {
-//			fmt.Println("Error reading file:", err)
-//			return
-//		}
-//		if b[0] == '0' {
-//			break
-//		}
-//	}
-//
-//	_, err = file.WriteAt([]byte("1"), offset)
-//	if err != nil {
-//		fmt.Println("Error writing file:", err)
-//		return
-//	}
-//
-//	fmt.Println("Last usage marked as red")
-//
-//	// Flush any buffered data to disk
-//	if err := file.Sync(); err != nil {
-//		fmt.Printf("Error flushing file: %v\n", err)
-//		return
-//	}
-//	return
-//}
-
-//func readFirstStatAvailable(filePath string) (*time.Time, error) {
-//	file, err := os.Open(filePath)
-//	if err != nil {
-//		log.Warnf("failed to open file: %v", err)
-//		return nil, err
-//	}
-//	defer file.Close()
-//
-//	r := csv.NewReader(file)
-//
-//	// Read the header
-//	_, err = r.Read()
-//	if err != nil {
-//		log.Warnf("failed to read csv header: %v", err)
-//		return nil, err
-//	}
-//
-//	// Read the first record after the header to parse the timestamp
-//	record, err := r.Read()
-//	if err != nil {
-//		log.Warnf("failed to read csv record: %v", err)
-//		return nil, err
-//	}
-//
-//	timeStr := record[0]
-//	timeRead, err := time.Parse(time.RFC3339, timeStr)
-//	if err != nil {
-//		log.Warnf("failed to parse time: %v", err)
-//		return nil, err
-//	}
-//
-//	return &timeRead, nil
-//}
-
-func getProbesNewerThan(stats []memUsageProbe, timeCutoff time.Time) ([]memUsageProbe, error) {
-	for i, curStat := range stats {
-		if !curStat.time.Before(timeCutoff) {
-			return stats[i:], nil
-		}
-	}
-	log.Warnf("no samples found newer than %v", timeCutoff)
-	return nil, fmt.Errorf("no samples found newer than %v", timeCutoff)
-}
-
-//func readSamplesNewerThan(filePath string, timeCutoff time.Time) ([]memoryUsage, error) {
-//	file, err := os.Open(filePath)
-//	if err != nil {
-//		log.Warnf("failed to open file: %v", err)
-//		return nil, err
-//	}
-//	defer file.Close()
-//
-//	r := csv.NewReader(file)
-//	records, err := r.ReadAll()
-//	if err != nil {
-//		log.Warnf("failed to read csv: %v", err)
-//		return nil, err
-//	}
-//
-//	if len(records) < 2 {
-//		log.Warnf("no records found in file")
-//		err = fmt.Errorf("no records found in file")
-//		return nil, err
-//	}
-//
-//	// Parse the header to fill the names
-//	header := records[0]
-//	names := make([]string, len(header)-2) // Exclude time and red
-//	for i := 1; i < len(header)-1; i++ {
-//		names[i-1] = header[i]
-//	}
-//
-//	var values []memoryUsage
-//	for _, record := range records[1:] {
-//		timeStr := record[0]
-//		timeRead, err := time.Parse(time.RFC3339, timeStr)
-//		if err != nil {
-//			log.Warnf("failed to parse time: %v", err)
-//			continue
-//		}
-//		if timeRead.Before(timeCutoff) {
-//			continue
-//		}
-//		// Parse the values for all the names in the header
-//		for i := 1; i < len(record)-1; i++ {
-//			value, err := strconv.ParseUint(record[i], 10, 64)
-//			if err != nil {
-//				log.Warnf("failed to parse value: %v", err)
-//				continue
-//			}
-//			values = append(values, memoryUsage{usage: value, name: names[i-1], time: timeRead})
-//		}
-//	}
-//
-//	return values, nil
-//}
 
 func appendMemoryUsage(stats []memUsageProbe, newStat memUsageProbe) []memUsageProbe {
 	stats = append(stats, newStat)
-	if size := len(stats) * bytesPerLineInFile; size > 1024*1024 { // 1MB
-		probesToRemove := size/bytesPerLineInFile - 1024*1024/bytesPerLineInFile
+	if size := (len(stats) + 1) * bytesPerLineInFile; size > maxStatsFileSize {
+		probesToRemove := size/bytesPerLineInFile - maxStatsFileSize/bytesPerLineInFile
 		stats = stats[probesToRemove:]
+		log.Noticef("trimming memory probes from %d to %d lines (%d removed)\n", len(stats)+probesToRemove, len(stats), probesToRemove)
+		// Update the last analyzed index if we removed probes
+		lastEntireSetAnalyzedIndex -= probesToRemove
 	}
 	return stats
 }
 
-func performMemoryLeakDetection(analysisPeriod time.Duration, slopeThreshold float64, smoothingProbeCount int, stats []memUsageProbe) []memUsageProbe {
+const (
+	weightHeap = 1.0
+	weightRSS  = 0.3
+)
+
+func calculateStreakScore(window []memUsageProbe, leakType memType, isEntireSet bool, streakFactor float64, step, maxLeakWindowSize int) float64 {
+	type streakInfo struct {
+		length             int
+		noLeakAfter        int
+		lastLeakWindowSize int
+	}
+	var streaks []streakInfo
+	curStreak := 0
+	noLeak := 0
+	inStreak := false
+	lastLeakWindowSize := 0
+
+	// Find the first probe that contains the leak type
+	var i int
+	found := false
+	for i = 0; i < len(window); i++ {
+		for _, leak := range window[i].leaks {
+			if leak.lType == leakType && leak.isEntireSet == isEntireSet {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+
+	// Iterate over the window, looking for streaks of leaks
+	for ; i < len(window); i += step {
+		isLeak := false
+		leakWindowSize := 0
+		for _, leak := range window[i].leaks {
+			if leak.lType == leakType && leak.isEntireSet == isEntireSet {
+				isLeak = true
+				leakWindowSize = leak.windowSize
+				break
+			}
+		}
+		if isLeak {
+			if !inStreak && curStreak > 0 {
+				newStreakInfo := streakInfo{
+					length:             curStreak,
+					noLeakAfter:        noLeak,
+					lastLeakWindowSize: lastLeakWindowSize,
+				}
+				streaks = append(streaks, newStreakInfo)
+				noLeak = 0
+			}
+			curStreak++
+			inStreak = true
+			lastLeakWindowSize = leakWindowSize
+		} else {
+			if inStreak && curStreak > 0 {
+				inStreak = false
+				noLeak = 1
+			} else if !inStreak && curStreak > 0 {
+				noLeak++
+			}
+		}
+	}
+	if curStreak > 0 {
+		newStreakInfo := streakInfo{
+			length:             curStreak,
+			noLeakAfter:        noLeak,
+			lastLeakWindowSize: lastLeakWindowSize,
+		}
+		streaks = append(streaks, newStreakInfo)
+	}
+
+	score := 0.0
+	for _, s := range streaks {
+		if s.lastLeakWindowSize > maxLeakWindowSize {
+			log.Warnf("Leak window size %d > max leak window size %d\n", s.lastLeakWindowSize, maxLeakWindowSize)
+			s.lastLeakWindowSize = maxLeakWindowSize
+		}
+		weight := float64(s.lastLeakWindowSize) / float64(maxLeakWindowSize)
+		log.Tracef("Leak streak: %d, no leak after: %d, weight: %.2f\n", s.length, s.noLeakAfter, weight)
+		score += float64(s.length*s.length) / float64(1+s.noLeakAfter) * weight
+	}
+
+	return score * streakFactor
+}
+
+// maxStreakScore returns the maximum streak score for a given window size and streak factor.
+func maxStreakScore(maxStreakSize int, streakFactor float64) float64 {
+	maxStreak := maxStreakSize * maxStreakSize
+	return float64(maxStreak) * streakFactor
+}
+
+// normalize normalizes a value to a range of 0..1
+// y= log(1 + k * x) / log (1 + k * maxValue);
+// k - a constant that determines the steepness of the curve
+// x - the value to be normalized
+// maxValue - the maximum value in the data set
+// The function returns a value between 0 and 1.
+// Bigger k means more steepness.
+func normalize(value, maxValue, k float64) float64 {
+	if maxValue <= 0 {
+		return 0
+	}
+	if value > maxValue {
+		log.Warnf("value %f > maxValue %f\n", value, maxValue)
+		value = maxValue
+	}
+	result := math.Log(1+k*value) / math.Log(1+k*maxValue)
+
+	return result
+}
+
+// determineLeakScore returns 0…10 (10 is worst).
+func determineLeakScore(stats []memUsageProbe, analysisWindowDuration, probingInterval time.Duration) (float64, float64) {
+	n := len(stats)
+	if n == 0 {
+		return 0, 0
+	}
+
+	const (
+		analysisWindowCount = 6
+	)
+	maxScoringWindowSize := int(analysisWindowDuration/probingInterval) * analysisWindowCount
+	analysisWindowSize := int(analysisWindowDuration / probingInterval)
+	entireSetStep := analysisWindowSize
+
+	// focus on last N probes
+	start := n - maxScoringWindowSize
+	if start < 0 {
+		start = 0
+	}
+	window := stats[start:]
+
+	maxEntireSetStreakSize := analysisWindowCount
+
+	maxHeapOneWindowStreakScore := maxStreakScore(maxScoringWindowSize, weightHeap)
+	maxRSSOneWindowStreakScore := maxStreakScore(maxScoringWindowSize, weightRSS)
+
+	streakEntireHeapFactor := maxHeapOneWindowStreakScore / (analysisWindowCount * analysisWindowCount)
+	streakEntireRSSFactor := maxRSSOneWindowStreakScore / (analysisWindowCount * analysisWindowCount)
+
+	maxEntireSetSize := maxStatsFileSize / bytesPerLineInFile
+	maxHeapEntireSetStreakScore := maxStreakScore(maxEntireSetStreakSize, streakEntireHeapFactor)
+	maxRSSEntireSetStreakScore := maxStreakScore(maxEntireSetStreakSize, streakEntireRSSFactor)
+
+	maxScore := maxHeapOneWindowStreakScore + maxRSSOneWindowStreakScore + maxHeapEntireSetStreakScore + maxRSSEntireSetStreakScore
+
+	// 2) calculate streak scores
+	heapOneWindowStreakScore := calculateStreakScore(window, memGoHeapInuse, false, weightHeap, 1, analysisWindowSize)
+	rssOneWindowStreakScore := calculateStreakScore(window, memOsRss, false, weightRSS, 1, analysisWindowSize)
+	heapEntireSetStreakScore := calculateStreakScore(window, memGoHeapInuse, true, streakEntireHeapFactor, entireSetStep, maxEntireSetSize)
+	rssEntireSetStreakScore := calculateStreakScore(window, memOsRss, true, streakEntireRSSFactor, entireSetStep, maxEntireSetSize)
+
+	// 5) combine, clamp & round
+	score := heapOneWindowStreakScore + rssOneWindowStreakScore + heapEntireSetStreakScore + rssEntireSetStreakScore
+
+	// Normalize to 0..10
+	result := normalize(score, maxScore, 0.0001) * 10
+	resultDebug := normalize(score, maxScore, 0.00001) * 10
+
+	log.Noticef("#ohm: result: %.3f, score: %.3f, maxScore: %.3f", result, score, maxScore)
+	log.Noticef("#ohm: maxHeapOneWindowStreakScore: %.3f, maxRSSOneWindowStreakScore: %.3f, maxHeapEntireSetStreakScore: %.3f, maxRSSEntireSetStreakScore: %.3f", maxHeapOneWindowStreakScore, maxRSSOneWindowStreakScore, maxHeapEntireSetStreakScore, maxRSSEntireSetStreakScore)
+	log.Noticef("#ohm: heapOneWindowStreakScore: %.3f, rssOneWindowStreakScore: %.3f, heapEntireSetStreakScore: %.3f, rssEntireSetStreakScore: %.3f\n", heapOneWindowStreakScore, rssOneWindowStreakScore, heapEntireSetStreakScore, rssEntireSetStreakScore)
+	return result, resultDebug
+}
+
+func performMemoryLeakDetection(analysisWindow, probingInterval time.Duration, slopeThreshold float64, smoothingProbeCount int, stats []memUsageProbe, isActive bool) []memUsageProbe {
 	// Measure the time taken for a single memory leak detection
 	startTime := time.Now()
 
@@ -553,72 +368,90 @@ func performMemoryLeakDetection(analysisPeriod time.Duration, slopeThreshold flo
 	// Write memory usage to CSV
 	memUsage := memUsageProbe{
 		time: timeNow,
-		usages: map[usageType]uint64{
-			heapUsage: heapInUse,
-			rssUsage:  rss,
+		usages: map[memType]uint64{
+			memGoHeapInuse: heapInUse,
+			memOsRss:       rss,
 		},
 	}
 	stats = appendMemoryUsage(stats, memUsage)
 	log.Noticef("Currently accumulated %d samples\n", len(stats))
-	// writeMemoryUsage(timeNow, memUsage, fileName)
-	firstStatAvailable := stats[0].time
 
-	if timeNow.Sub(firstStatAvailable) < analysisPeriod {
-		log.Noticef("Not enough samples to perform regression, waiting for %s\n", analysisPeriod)
+	if !isActive {
+		log.Noticef("Memory leak detection is not active, skipping analysis\n")
 		return stats
 	}
 
-	// Calculate the time of the first sample to be used in the regression
-	firstSampleTime := timeNow.Add(analysisPeriod * -1)
+	// How many samples to analyze in one window
+	probesInAnalysisWindow := int(analysisWindow / probingInterval)
+
+	// If we don't have enough samples, wait for more
+	if len(stats) < probesInAnalysisWindow {
+		log.Noticef("Not enough samples to perform analysis, waiting for more samples\n")
+		return stats
+	}
+
+	// Count the index of the first sample to be used
+	currentIndex := len(stats) - 1
+	firstProbeIndex := currentIndex - probesInAnalysisWindow + 1
+	if firstProbeIndex < 0 {
+		firstProbeIndex = 0
+	}
 
 	// Read all samples newer than the first sample time
-	probes, err := getProbesNewerThan(stats, firstSampleTime)
-	if err != nil {
-		log.Warnf("failed to read samples: %v", err)
-		return stats
-	}
+	probes := stats[firstProbeIndex:]
+	firstSampleTime := probes[0].time
 
 	heapValues := make([]uint64, 0)
 	rssValues := make([]uint64, 0)
 	times := make([]float64, 0)
 	for _, probe := range probes {
 		times = append(times, probe.time.Sub(firstSampleTime).Seconds())
-		heapValues = append(heapValues, probe.usages[heapUsage])
-		rssValues = append(rssValues, probe.usages[rssUsage])
+		heapValues = append(heapValues, probe.usages[memGoHeapInuse])
+		rssValues = append(rssValues, probe.usages[memOsRss])
 	}
 
 	// Get a timestamp for the filename
 	// Smooth the values via a median filter to reduce spikes
+	log.Noticef("Smoothing values for one window, heap: %d", len(heapValues))
 	smoothedHeapValues := medianFilter(heapValues, smoothingProbeCount)
+	log.Noticef("Smoothing values for one window, RSS: %d", len(rssValues))
 	smoothedRSSValues := medianFilter(rssValues, smoothingProbeCount)
 
+	log.Noticef("Run linear regression on heap, one window, size: %d", len(smoothedHeapValues))
 	heapSlope := linearRegressionSlope(times, smoothedHeapValues)
+	log.Noticef("Run linear regression on RSS, one window, size: %d", len(smoothedRSSValues))
 	RSSSlope := linearRegressionSlope(times, smoothedRSSValues)
 	//If slope is positive and above a certain threshold, print a warning
 	if heapSlope > slopeThreshold {
-		probes[len(probes)-1].leaks = append(probes[len(probes)-1].leaks, heapOneWindow)
-		heapReachedThreshold++
-		if heapReachedThreshold > 10 {
-			log.Warnf("Potential memory leak (heap) detected: slope %.2f > %.2f\n", heapSlope, slopeThreshold)
+		newLeakDesc := leakDesc{
+			lType:       memGoHeapInuse,
+			lSlope:      heapSlope,
+			windowSize:  len(heapValues),
+			isEntireSet: false,
 		}
+		probes[len(probes)-1].leaks = append(probes[len(probes)-1].leaks, newLeakDesc)
+		heapReachedThreshold++
+		log.Warnf("Potential memory leak (heap) detected: slope %.2f > %.2f\n", heapSlope, slopeThreshold*2)
 	} else {
 		heapReachedThreshold = 0
 	}
 	if RSSSlope > slopeThreshold {
-		probes[len(probes)-1].leaks = append(probes[len(probes)-1].leaks, rssOneWindow)
-		rssReachedThreshold++
-		if rssReachedThreshold > 10 && heapReachedThreshold > 0 { // Just RSS growth most probably is caused by page cache
-			log.Warnf("Potential memory leak (RSS) detected: slope %.2f > %.2f\n", RSSSlope, slopeThreshold)
+		newLeakDesc := leakDesc{
+			lType:       memOsRss,
+			lSlope:      RSSSlope,
+			windowSize:  len(rssValues),
+			isEntireSet: false,
 		}
+		probes[len(probes)-1].leaks = append(probes[len(probes)-1].leaks, newLeakDesc)
+		rssReachedThreshold++
+		log.Warnf("Potential memory leak (RSS) detected: slope %.2f > %.2f\n", RSSSlope, slopeThreshold*2)
 	} else {
 		rssReachedThreshold = 0
 	}
-	if entireSetAnalyzedLast.IsZero() {
-		entireSetAnalyzedLast = probes[0].time
-	}
-	// Once per 5 periods, perform analysis on entire data set
-	if timeNow.Sub(entireSetAnalyzedLast) >= analysisPeriod*5 {
-		entireSetAnalyzedLast = timeNow
+
+	// Once per analysis window, perform analysis on entire data set
+	if currentIndex == lastEntireSetAnalyzedIndex+probesInAnalysisWindow-1 {
+		lastEntireSetAnalyzedIndex = currentIndex
 		log.Noticef("Performing analysis on entire data set")
 		// Read all samples
 		probes = stats
@@ -626,27 +459,47 @@ func performMemoryLeakDetection(analysisPeriod time.Duration, slopeThreshold flo
 		rssValues = make([]uint64, 0)
 		times = make([]float64, 0)
 		for _, probe := range probes {
-			times = append(times, probe.time.Sub(firstSampleTime).Seconds())
-			heapValues = append(heapValues, probe.usages[heapUsage])
-			rssValues = append(rssValues, probe.usages[rssUsage])
+			times = append(times, probe.time.Sub(probes[0].time).Seconds())
+			heapValues = append(heapValues, probe.usages[memGoHeapInuse])
+			rssValues = append(rssValues, probe.usages[memOsRss])
 		}
 		// Perform smoothing with a bigger window (x5)
+		log.Noticef("Smoothing values for entire data set, heap: %d", len(heapValues))
 		smoothedHeapValues = medianFilter(heapValues, smoothingProbeCount*5)
+		log.Noticef("Smoothing values for entire data set, RSS: %d", len(rssValues))
 		smoothedRSSValues = medianFilter(rssValues, smoothingProbeCount*5)
+		log.Noticef("Run linear regression on heap, entire data set, size: %d", len(smoothedHeapValues))
 		heapSlope = linearRegressionSlope(times, smoothedHeapValues)
+		log.Noticef("Run linear regression on RSS, entire data set, size: %d", len(smoothedRSSValues))
 		RSSSlope = linearRegressionSlope(times, smoothedRSSValues)
 		log.Noticef("Heap slope: %.2f, RSS slope: %.2f\n", heapSlope, RSSSlope)
 
 		// If slope is positive and above a certain threshold, print a warning
-		if heapSlope > slopeThreshold {
-			log.Warnf("Potential memory leak (heap) detected on a entire data set: slope %.2f > %.2f\n", heapSlope, slopeThreshold/5)
-			probes[len(probes)-1].leaks = append(probes[len(probes)-1].leaks, heapEntireSet)
+		if heapSlope > slopeThreshold { // Use a lower threshold for the entire set
+			log.Warnf("Potential memory leak (heap) detected on a entire data set: slope %.2f > %.2f\n", heapSlope, slopeThreshold)
+			newLeakDesc := leakDesc{
+				lType:       memGoHeapInuse,
+				lSlope:      heapSlope,
+				windowSize:  len(heapValues),
+				isEntireSet: true,
+			}
+			probes[len(probes)-1].leaks = append(probes[len(probes)-1].leaks, newLeakDesc)
 		}
-		if RSSSlope > slopeThreshold {
-			log.Warnf("Potential memory leak (RSS) detected on a entire data set: slope %.2f > %.2f\n", RSSSlope, slopeThreshold/5)
-			probes[len(probes)-1].leaks = append(probes[len(probes)-1].leaks, rssEntireSet)
+		if RSSSlope > slopeThreshold { // Use a lower threshold for the entire seta
+			log.Warnf("Potential memory leak (RSS) detected on a entire data set: slope %.2f > %.2f\n", RSSSlope, slopeThreshold)
+			newLeakDesc := leakDesc{
+				lType:       memOsRss,
+				lSlope:      RSSSlope,
+				windowSize:  len(rssValues),
+				isEntireSet: true,
+			}
+			probes[len(probes)-1].leaks = append(probes[len(probes)-1].leaks, newLeakDesc)
 		}
 	}
+
+	// Define signal zone for the last probe
+	stats[len(stats)-1].leakScore, stats[len(stats)-1].leakScoreDebug = determineLeakScore(stats, analysisWindow, probingInterval)
+
 	// Calculate the time taken for the memory leak detection
 	elapsedTime := time.Since(startTime)
 	log.Noticef("Memory leak detection performed in %s, accumulated %d samples\n", elapsedTime, len(stats))
@@ -666,7 +519,7 @@ func writeMemoryUsage(stats []memUsageProbe, fileName string) {
 	w := csv.NewWriter(file)
 
 	// Form header as "time,memory_usage_name1, memory_usage_name2, ... ,red"
-	header := []string{"time", "heap", "rss", "red"}
+	header := []string{"time", "heap", "rss", "score", "score_debug"}
 	if err = w.Write(header); err != nil {
 		log.Warnf("failed to write header: %v", err)
 		return
@@ -679,14 +532,10 @@ func writeMemoryUsage(stats []memUsageProbe, fileName string) {
 		// Add timestamp first
 		record = append(record, probe.time.Format(time.RFC3339))
 		// Add heap and RSS values
-		record = append(record, fmt.Sprintf("%d", probe.usages[heapUsage]))
-		record = append(record, fmt.Sprintf("%d", probe.usages[rssUsage]))
-		if len(probe.leaks) > 0 {
-			// Add red value if there are leaks
-			record = append(record, "1")
-		} else {
-			record = append(record, "0") // Default red value
-		}
+		record = append(record, fmt.Sprintf("%d", probe.usages[memGoHeapInuse]))
+		record = append(record, fmt.Sprintf("%d", probe.usages[memOsRss]))
+		record = append(record, fmt.Sprintf("%.3f", probe.leakScore))
+		record = append(record, fmt.Sprintf("%.3f", probe.leakScoreDebug))
 		if err = w.Write(record); err != nil {
 			log.Warnf("failed to write record: %v", err)
 			return
@@ -704,6 +553,73 @@ func writeMemoryUsage(stats []memUsageProbe, fileName string) {
 	log.Noticef("Data exported to %s\n", fileName)
 }
 
+// cleanupOldCsvFiles removes old CSV files from the output directory.
+// Limit the comulative size of the files to 10MB.
+// If the size exceeds 10MB, remove the oldest files until the size is below 10MB.
+func cleanupOldCsvFiles() {
+	dir := types.MemoryMonitorOutputDir
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		log.Warnf("failed to read directory: %v", err)
+		return
+	}
+
+	var totalSize int64
+	var fileInfos []os.FileInfo
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		// We are only interested in CSV files and their backups: *.csv and *.csv.<timestamp>.old
+		if filepath.Ext(file.Name()) != ".csv" && filepath.Ext(file.Name()) != ".old" {
+			continue
+		}
+		info, err := file.Info()
+		if err != nil {
+			log.Warnf("failed to get file info: %v", err)
+			continue
+		}
+		fileInfos = append(fileInfos, info)
+		totalSize += info.Size()
+	}
+
+	if totalSize <= 10*1024*1024 { // 10MB
+		return
+	}
+
+	sort.Slice(fileInfos, func(i, j int) bool {
+		return fileInfos[i].ModTime().Before(fileInfos[j].ModTime())
+	})
+
+	for _, fileInfo := range fileInfos {
+		if totalSize <= 10*1024*1024 { // 10MB
+			break
+		}
+		err := os.Remove(filepath.Join(dir, fileInfo.Name()))
+		if err != nil {
+			log.Warnf("failed to remove file: %v", err)
+			continue
+		}
+		totalSize -= fileInfo.Size()
+		log.Noticef("removed old CSV file: %s\n", fileInfo.Name())
+	}
+}
+
+func backupOldCsvFile() {
+	// Backup the old CSV file
+	fileName := filepath.Join(types.MemoryMonitorOutputDir, "memory_usage.csv")
+	backupFileName := fileName + "." + time.Now().Format("20060102150405") + ".old"
+	if _, err := os.Stat(fileName); err == nil {
+		err = os.Rename(fileName, backupFileName)
+		if err != nil {
+			log.Warnf("failed to rename file: %v", err)
+		} else {
+			log.Noticef("Backup of old CSV file created: %s\n", backupFileName)
+		}
+	}
+}
+
 // This goroutine periodically captures memory usage stats and attempts to detect
 // a potential memory leak by looking at the trend of heap usage over time. It uses a
 // simple linear regression to estimate whether heap memory usage is consistently rising.
@@ -716,27 +632,28 @@ func InternalMemoryMonitor(ctx *watcherContext) {
 	log.Functionf("Starting internal memory monitor (stoppable: %v)", ctx.IMMParams.isStoppable())
 	log.Tracef("Starting internal memory monitor")
 	log.Warnf("#ohm: Internal memory monitor started")
+	fileName := filepath.Join(types.MemoryMonitorOutputDir, "memory_usage.csv")
+	// Backup the old CSV file
+	backupOldCsvFile()
+	// Cleanup old CSV files
+	cleanupOldCsvFiles()
 	// Create a slice to accumulate memory usage data
 	stats := make([]memUsageProbe, 0)
 	statsWrittenLastTime := time.Now()
 	// Get the initial memory leak detection parameters
 	for {
-		analysisPeriod, probingInterval, slopeThreshold, smoothingProbeCount, isActive := ctx.IMMParams.Get()
+		analysisWindow, probingInterval, slopeThreshold, smoothingProbeCount, isActive := ctx.IMMParams.Get()
 		// Check if we have to stop
 		if ctx.IMMParams.isStoppable() && ctx.IMMParams.checkStopCondition() {
 			log.Functionf("Stopping internal memory monitor")
 			log.Warnf("#ohm: Internal memory monitor stopped")
 			return
 		}
-		if isActive {
-			log.Noticef("#ohm: Internal memory monitor is active, performing memory leak detection")
-			stats = performMemoryLeakDetection(analysisPeriod, slopeThreshold, smoothingProbeCount, stats)
-		}
+		stats = performMemoryLeakDetection(analysisWindow, probingInterval, slopeThreshold, smoothingProbeCount, stats, isActive)
 		// Write memory usage to CSV once per 1 minute
 		if time.Since(statsWrittenLastTime) >= 1*time.Minute {
 			log.Noticef("#ohm: Writing memory usage to CSV")
 			// Write memory usage to CSV
-			fileName := filepath.Join(types.MemoryMonitorOutputDir, "memory_usage.csv")
 			writeMemoryUsage(stats, fileName)
 			statsWrittenLastTime = time.Now()
 		}
@@ -778,13 +695,13 @@ func updateInternalMemoryMonitorConfig(ctx *watcherContext) {
 	}
 
 	// Update the internal memory monitor parameters
-	analysisPeriod := time.Duration(gcp.GlobalValueInt(types.InternalMemoryMonitorAnalysisPeriodMinutes)) * time.Minute
+	analysisWindow := time.Duration(gcp.GlobalValueInt(types.InternalMemoryMonitorAnalysisWindowMinutes)) * time.Minute
 	probingInterval := time.Duration(gcp.GlobalValueInt(types.InternalMemoryMonitorProbingIntervalSeconds)) * time.Second
 	slopeThreshold := float64(gcp.GlobalValueInt(types.InternalMemoryMonitorSlopeThreshold))
-	smoothingPeriod := time.Duration(gcp.GlobalValueInt(types.InternalMemoryMonitorSmoothingPeriodSeconds)) * time.Second
-	smoothingProbeCount := int(smoothingPeriod / probingInterval)
+	smoothingWindow := time.Duration(gcp.GlobalValueInt(types.InternalMemoryMonitorSmoothingWindowSeconds)) * time.Second
+	smoothingProbeCount := int(smoothingWindow / probingInterval)
 	isActive := gcp.GlobalValueBool(types.InternalMemoryMonitorEnabled)
-	ctx.IMMParams.Set(analysisPeriod, probingInterval, slopeThreshold, smoothingProbeCount, isActive)
+	ctx.IMMParams.Set(analysisWindow, probingInterval, slopeThreshold, smoothingProbeCount, isActive)
 }
 
 // This function is just a placeholder to simulate a memory leak.
@@ -794,14 +711,14 @@ func FunctionThatLeaksMemory() {
 	buffer := make([]byte, 0)
 	// Seed the random number generator
 	for {
-		chunk := make([]byte, 1024*1024/64) // ~0.01 MB that creates leak of 135 MB per day
+		chunk := make([]byte, 2048) // 2KB per 10 seconds is ~118 Mb per week
 		// Put random data in the chunk
 		for i := range chunk {
 			chunk[i] = byte(rand.Intn(256))
 		}
 		buffer = append(buffer, chunk...)
 		// Print the size of the buffer
-		log.Noticef("#ohm: Buffer size: %d MB\n", len(buffer)/1024/1024)
+		log.Noticef("#ohm: Buffer size: %d bytes (%0.3f MB)\n", len(buffer), float64(len(buffer))/1024/1024)
 		time.Sleep(10 * time.Second)
 	}
 }

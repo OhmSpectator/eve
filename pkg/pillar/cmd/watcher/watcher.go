@@ -342,7 +342,7 @@ func Run(ps *pubsub.PubSub, loggerArg *logrus.Logger, logArg *base.LogObject, ar
 
 	go GoroutinesMonitor(&ctx)
 	go InternalMemoryMonitor(&ctx)
-	//go FunctionThatLeaksMemory()
+	go FunctionThatLeaksMemory()
 
 	for {
 		select {
